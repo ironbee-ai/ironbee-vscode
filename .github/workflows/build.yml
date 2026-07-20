@@ -1,0 +1,37 @@
+name: NPM Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+
+env:
+  # devtools bundling (once added) must not pull Playwright browsers in CI.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      # --omit=optional drops the native better-sqlite3 from the bundled devtools (universal VSIX).
+      - name: Install Dependencies
+        run: npm ci --omit=optional
+      - name: Lint / Typecheck
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build Extension
+        run: npm run build
+      - name: Package VSIX
+        run: npx vsce package
