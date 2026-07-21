@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { isRealUninstall, type UninstallProbe } from '../../src/lifecycle/uninstallCleanup';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { promises as fsp } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+    clearCollectorTokenFromGlobalConfig,
+    isRealUninstall,
+    type UninstallProbe,
+} from '../../src/lifecycle/uninstallCleanup';
 
 const PREFIX = 'ironbee-ai.ironbee-vscode-';
 const OURS = '/ext/ironbee-ai.ironbee-vscode-0.1.0';
@@ -59,5 +66,41 @@ describe('isRealUninstall', () => {
                 ]),
             ),
         ).toBe(true);
+    });
+});
+
+describe('clearCollectorTokenFromGlobalConfig', () => {
+    let dir: string;
+    let cfgPath: string;
+    beforeEach(async () => {
+        dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ib-unc-'));
+        cfgPath = path.join(dir, 'config.json');
+    });
+    afterEach(async () => {
+        await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    it('removes only collector.oauthToken, keeping url + other blocks intact', async () => {
+        await fsp.writeFile(
+            cfgPath,
+            JSON.stringify({
+                collector: { url: 'https://c', oauthToken: 'ibt_x', apiKey: 'k' },
+                console: { url: 'https://console' },
+            }),
+        );
+        clearCollectorTokenFromGlobalConfig(cfgPath);
+        const cfg = JSON.parse(await fsp.readFile(cfgPath, 'utf8'));
+        expect(cfg.collector.oauthToken).toBeUndefined(); // removed
+        expect(cfg.collector.url).toBe('https://c'); // kept
+        expect(cfg.collector.apiKey).toBe('k'); // not ours — kept
+        expect(cfg.console.url).toBe('https://console'); // unrelated block kept
+    });
+
+    it('no-ops when there is no token / no file (never throws)', async () => {
+        clearCollectorTokenFromGlobalConfig(path.join(dir, 'missing.json')); // absent
+        await fsp.writeFile(cfgPath, JSON.stringify({ collector: { url: 'https://c' } }));
+        clearCollectorTokenFromGlobalConfig(cfgPath); // no oauthToken
+        const cfg = JSON.parse(await fsp.readFile(cfgPath, 'utf8'));
+        expect(cfg.collector.url).toBe('https://c');
     });
 });

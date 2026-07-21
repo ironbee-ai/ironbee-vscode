@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import {
     EXTENSION_ID_PREFIX,
+    clearCollectorTokenFromGlobalConfig,
     isRealUninstall,
     readObsoleteMap,
     runCliUninstallAll,
@@ -44,6 +45,7 @@ let statusBar: StatusBar | undefined;
 const output: () => vscode.OutputChannel = (): vscode.OutputChannel => outputChannel;
 let outputChannel: vscode.OutputChannel;
 let extensionContext: vscode.ExtensionContext | undefined;
+let authManager: AuthManager | undefined; // kept for deactivate (full sign-out on real uninstall)
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     extensionContext = context;
@@ -61,6 +63,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         store,
         openUrl: async (url: string): Promise<boolean> => vscode.env.openExternal(vscode.Uri.parse(url)),
     });
+    authManager = auth;
     const console: ConsoleClient = new ConsoleClient(envConfig.consoleApiBase, (force?: boolean): Promise<string> => auth.getIdToken(force));
     const accounts: AccountManager = new AccountManager({
         console,
@@ -104,8 +107,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (devtoolsMode === 'npx') {
         void ensureDevtoolsPrewarmed(context).catch((e: unknown): void => log(`devtools pre-warm skipped: ${(e as Error).message}`));
     }
+    // Onboarding nudge — runs INDEPENDENTLY (never chained to the network rotation below, so a slow/
+    // hung rotation can't stop it from firing). It gates on the config token, so at worst a valid-
+    // session user whose token gets refilled a moment later sees one dismissible prompt.
     void firstRunAndSuggest(context, auth).catch((e: unknown): void => log(`first-run/suggest skipped: ${(e as Error).message}`));
-    // Proactively rotate the collector token before its ~90-day expiry (quietly, only if signed in).
+    // Proactively rotate/refill the collector token before its ~90-day expiry (quietly, if signed in).
     void rotateCollectorTokenOnStartup(svc).catch((e: unknown): void => log(`startup token check skipped: ${(e as Error).message}`));
 }
 
@@ -122,7 +128,6 @@ async function rotateCollectorTokenOnStartup(svc: Services): Promise<void> {
     try {
         const current: Account = await svc.console.currentAccount();
         await svc.accounts.ensureCollectorToken(current.id);
-        log('collector token checked on startup');
     } catch (err) {
         log(`startup collector-token check failed: ${(err as Error).message}`);
     }
@@ -206,6 +211,12 @@ export async function deactivate(): Promise<void> {
             extensionIdPrefix: EXTENSION_ID_PREFIX,
         });
         if (real) {
+            // Critical clears FIRST (fast, so they finish inside the shutdown budget): exactly what
+            // sign-out does — revoke + clear SecretStorage (Cognito session + cached collector tokens),
+            // which survives uninstall and would otherwise leave a reinstall "signed in" and refill the
+            // token without asking. Then drop the config token. The slow project uninstall runs LAST.
+            await authManager?.signOut().catch((): void => undefined);
+            clearCollectorTokenFromGlobalConfig(); // drop the extension-managed collector.oauthToken
             runCliUninstallAll(extPath, process.execPath);
         }
     } catch {
@@ -394,10 +405,34 @@ async function switchAccount(svc: Services): Promise<void> {
     }
 }
 
+/**
+ * Setup requires a Cognito sign-in (verification is tied to the user's account). Returns true when
+ * signed in — prompting once and running the sign-in flow if needed; false if the user declines or
+ * sign-in fails, in which case the caller must abort.
+ */
+async function requireSignIn(svc: Services): Promise<boolean> {
+    if (await svc.auth.isSignedIn()) {
+        return true;
+    }
+    const choice: string | undefined = await vscode.window.showInformationMessage(
+        'Sign in to IronBee to set up verification for your projects.',
+        'Sign In',
+    );
+    if (choice !== 'Sign In') {
+        return false;
+    }
+    await vscode.commands.executeCommand('ironbee.signIn');
+    return svc.auth.isSignedIn();
+}
+
 async function installIntoProject(svc: Services): Promise<void> {
     const cliEntry: string | undefined = resolveCliEntry();
     if (!cliEntry) {
         void vscode.window.showErrorMessage('IronBee CLI is not bundled in this build.');
+        return;
+    }
+    // Sign-in is required to set up IronBee — verification is tied to the user's account.
+    if (!(await requireSignIn(svc))) {
         return;
     }
     // 1) Which projects — checkbox list of open folders + a folder browser for custom paths.
@@ -838,18 +873,13 @@ async function firstRunAndSuggest(context: vscode.ExtensionContext, auth: AuthMa
     // `ironbee.telemetry.enable` — no prompt/notice. Just ensure the anonymous id exists.
     await ensureAnonymousId().catch((): void => {});
 
-    // First-run sign-in nudge (design EXT-1). Suppressed when already signed in or when a CLI
-    // collector token already exists (state b: install/verify work without a Cognito session).
-    // The permanent "stop asking" flag is set ONLY after a successful sign-in; "Later" (or a
-    // dismissed dialog) just snoozes for a day so we re-ask instead of nagging every launch, and a
-    // failed/cancelled sign-in sets nothing so the next activation asks again.
-    const FIRST_RUN_DONE: string = 'ironbee.firstRunSignedIn'; // permanent: set only after a successful sign-in
-    const SNOOZE_UNTIL: string = 'ironbee.firstRunSnoozeUntil'; // epoch ms; re-prompt only once this passes
-    const SNOOZE_MS: number = 24 * 60 * 60 * 1000; // 1 day
-    const done: boolean = context.globalState.get<boolean>(FIRST_RUN_DONE) === true;
-    const snoozed: boolean = Date.now() < (context.globalState.get<number>(SNOOZE_UNTIL) ?? 0);
-    const collectorOnly: boolean = await hasLocalCollectorToken().catch((): boolean => false);
-    if (!done && !snoozed && !(await auth.isSignedIn()) && !collectorOnly) {
+    // First-run sign-in nudge (design EXT-1). The single source of truth for "is the user set up" is
+    // the collector token in ~/.ironbee/config.json — NOT the SecretStorage session, which can persist
+    // stale across a reinstall and wrongly read as "signed in". If there's no token, prompt sign-in.
+    // Shown once per activation (so it doesn't nag within a session); no persistent snooze — a stale
+    // "Later" must never survive a reinstall and silently suppress onboarding.
+    const hasToken: boolean = await hasLocalCollectorToken().catch((): boolean => false);
+    if (!hasToken) {
         const choice: string | undefined = await vscode.window.showInformationMessage(
             'Sign in to IronBee to start verifying your projects.',
             'Sign In',
@@ -857,25 +887,18 @@ async function firstRunAndSuggest(context: vscode.ExtensionContext, auth: AuthMa
         );
         if (choice === 'Sign In') {
             await vscode.commands.executeCommand('ironbee.signIn');
-            if (await auth.isSignedIn()) {
-                // Success → never auto-prompt again; clear any pending snooze.
-                await context.globalState.update(FIRST_RUN_DONE, true);
-                await context.globalState.update(SNOOZE_UNTIL, undefined);
-            }
-            // Failed/cancelled sign-in: set nothing, so the next activation asks again.
-        } else {
-            // "Later" or dismissed → snooze a day, then ask again.
-            await context.globalState.update(SNOOZE_UNTIL, Date.now() + SNOOZE_MS);
         }
+        // "Later"/dismiss → nothing to persist; it simply re-appears on the next activation.
     }
 
-    // Encouraging per-project setup suggestion (design EXT-6).
+    // Encouraging per-project setup suggestion (design EXT-6) — only when signed in, since setup
+    // requires sign-in; a signed-out user is funneled through the sign-in nudge above first.
     const folder: vscode.WorkspaceFolder | undefined = vscode.workspace.workspaceFolders?.[0];
     const suggestOnOpen: boolean = vscode.workspace.getConfiguration('ironbee').get('install.suggestOnOpen', true);
-    if (folder && suggestOnOpen) {
+    if (folder && suggestOnOpen && (await auth.isSignedIn())) {
         const key: string = `ironbee.suppressSuggest.${folder.uri.fsPath}`;
         const alreadySetUp: boolean = await isSetUp(folder.uri.fsPath);
-        if (!alreadySetUp && !context.workspaceState.get(key)) {
+        if (!alreadySetUp && context.workspaceState.get(key) !== true) {
             statusBar?.needsProjectSetup();
             const choice: string | undefined = await vscode.window.showInformationMessage(
                 'IronBee can verify this project’s changes — set it up in one click.',

@@ -24,6 +24,9 @@ export function buildAuthorizeUrl(
     u.searchParams.set('state', state);
     u.searchParams.set('code_challenge', codeChallenge);
     u.searchParams.set('code_challenge_method', 'S256');
+    // Force a fresh login screen instead of silently reusing an existing Cognito session cookie
+    // (otherwise the browser signs in with the last account without asking).
+    u.searchParams.set('prompt', 'login');
     return u.toString();
 }
 

@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { homeIronbeeConfigPath } from '../util/atomicWrite';
 
 /** Folder-name prefix identifying any installed version of this extension. */
 export const EXTENSION_ID_PREFIX: string = 'ironbee-ai.ironbee-vscode-';
@@ -54,6 +55,32 @@ export function readObsoleteMap(extensionsDir: string): Record<string, boolean> 
  * (`ironbee uninstall --all`). Synchronous so it finishes before the host process exits; bounded by
  * a timeout. Runs with the editor's own Node (ELECTRON_RUN_AS_NODE), never a system node.
  */
+/**
+ * On a full extension uninstall, drop the extension-managed collector credential from the GLOBAL
+ * ~/.ironbee/config.json (collector.oauthToken) — it was minted for this install and shouldn't
+ * linger after removal. Only that one key is removed; other config (urls, devtools, integrations)
+ * is left intact. Synchronous + best-effort so it completes before the host process exits.
+ */
+export function clearCollectorTokenFromGlobalConfig(configPath: string = homeIronbeeConfigPath()): void {
+    try {
+        if (!fs.existsSync(configPath)) {
+            return;
+        }
+        const cfg: Record<string, unknown> = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+        const collector: Record<string, unknown> | undefined =
+            cfg.collector !== null && typeof cfg.collector === 'object'
+                ? (cfg.collector as Record<string, unknown>)
+                : undefined;
+        if (collector === undefined || !('oauthToken' in collector)) {
+            return;
+        }
+        delete collector.oauthToken;
+        fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+    } catch {
+        /* best-effort */
+    }
+}
+
 export function runCliUninstallAll(extensionPath: string, execPath: string): void {
     try {
         const cliEntry: string = path.join(extensionPath, 'node_modules', '@ironbee-ai', 'cli', 'dist', 'index.js');
@@ -62,7 +89,7 @@ export function runCliUninstallAll(extensionPath: string, execPath: string): voi
         }
         spawnSync(execPath, [cliEntry, 'uninstall', '--all', '--yes'], {
             env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-            timeout: 15_000,
+            timeout: 6_000, // runs last during shutdown — keep it short so it can't hang the host
             stdio: 'ignore',
         });
     } catch {

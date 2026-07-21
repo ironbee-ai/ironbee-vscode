@@ -27,6 +27,11 @@ describe('buildAuthorizeUrl', () => {
         expect(url.searchParams.get('code_challenge')).toBe('CHAL');
         expect(url.searchParams.get('code_challenge_method')).toBe('S256');
     });
+
+    it('forces a fresh login screen with prompt=login (no silent session reuse)', () => {
+        const url = new URL(buildAuthorizeUrl(env, 'http://127.0.0.1:53187/callback', 'CHAL', 'STATE'));
+        expect(url.searchParams.get('prompt')).toBe('login');
+    });
 });
 
 describe('exchangeCode', () => {

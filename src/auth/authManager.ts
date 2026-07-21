@@ -109,10 +109,21 @@ export class AuthManager {
 
     async signOut(): Promise<void> {
         const session: TokenSet | undefined = await this.deps.store.getSession();
-        if (session?.refreshToken) {
-            // Best-effort — revocation failing must not block local sign-out.
-            await revokeToken(this.deps.env, session.refreshToken, this.deps.fetchFn).catch((): void => {});
-        }
+        // Clear local state FIRST so it's GUARANTEED even if the network revoke is slow — this is
+        // also called from deactivate, where the host-shutdown time budget is tight and a slow revoke
+        // could otherwise get the process killed before SecretStorage is cleared (leaving a reinstall
+        // still "signed in").
         await this.deps.store.clearAll();
+        if (session?.refreshToken) {
+            // Best-effort server-side revoke, bounded so it can never hang.
+            const revoke: Promise<void> = revokeToken(this.deps.env, session.refreshToken, this.deps.fetchFn).catch(
+                (): void => {},
+            );
+            const timeout: Promise<void> = new Promise<void>((resolve: () => void): void => {
+                const t: NodeJS.Timeout = setTimeout(resolve, 3000);
+                t.unref?.();
+            });
+            await Promise.race([revoke, timeout]);
+        }
     }
 }
