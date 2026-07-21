@@ -1,0 +1,8 @@
+{
+  "devtoolsVersion": "0.23.0",
+  "playwrightVersion": "1.61.1",
+  "chromiumRevision": "1228",
+  "chromiumHeadlessShellRevision": "1228",
+  "ffmpegRevision": "1011",
+  "resolvedFromPin": "1.61.1"
+}

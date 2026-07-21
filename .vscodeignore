@@ -1,0 +1,50 @@
+# Source & tooling not needed in the VSIX
+src/**
+test/**
+scripts/**
+**/*.test.ts
+**/*.map
+tsconfig.json
+esbuild.mjs
+vitest.config.ts
+eslint.config.js
+.github/**
+docs/**
+.idea/**
+.claude/**
+**/.eslintrc*
+.gitignore
+.release-it.json
+package-lock.json
+*.vsix
+# Internal contributor/agent docs — not for end users.
+AGENTS.md
+CLAUDE.md
+
+# Trim transitive dep cruft (examples/tests/docs) to keep the VSIX small.
+node_modules/**/example/**
+node_modules/**/examples/**
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/docs/**
+node_modules/**/*.md
+node_modules/**/.npmignore
+node_modules/**/.github/**
+node_modules/**/CHANGELOG*
+
+# ...BUT ship the bundled runtimes we execute INTACT. The CLI (and, in the platform-specific
+# build, devtools) readFileSync their own asset files at runtime — e.g. each client's SKILL.md
+# (dist/clients/<client>/commands/**/SKILL.md) — so trimming their .md/docs/test files breaks
+# `ironbee install`. Re-include everything under them (negations must come AFTER the trims above).
+!node_modules/@ironbee-ai/cli/**
+!node_modules/@ironbee-ai/devtools/**
+
+# Windows debug symbols (node-pty prebuilds) — never loaded at runtime on any platform, but ~50 MB
+# of dead weight in every per-platform VSIX. Excluded last so it wins over the re-includes above.
+node_modules/**/*.pdb
+
+# Bundled runtimes shipped in the VSIX (both pure JS — no native libs):
+#   node_modules/@ironbee-ai/cli       — spawned to run `ironbee install`
+#   node_modules/playwright-core       — in-process Chromium installer (browsers NOT shipped)
+# @ironbee-ai/devtools + its native deps (sharp/node-pty/frida) are NOT bundled — they install
+# on the user machine via `npx @ironbee-ai/devtools@<pinned>` at runtime.

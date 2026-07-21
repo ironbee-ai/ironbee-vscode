@@ -1,0 +1,137 @@
+{
+  "name": "ironbee-vscode",
+  "displayName": "IronBee",
+  "description": "IronBee — Verification and Intelligence Layer for AI Coding Agents",
+  "version": "0.1.0",
+  "publisher": "ironbee-ai",
+  "icon": "media/icon.png",
+  "license": "Elastic-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ironbee-ai/ironbee-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=22"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "ironbee.signIn",
+        "title": "IronBee: Sign In"
+      },
+      {
+        "command": "ironbee.signOut",
+        "title": "IronBee: Sign Out"
+      },
+      {
+        "command": "ironbee.switchAccount",
+        "title": "IronBee: Switch Account"
+      },
+      {
+        "command": "ironbee.installIntoProject",
+        "title": "IronBee: Set Up For This Project"
+      },
+      {
+        "command": "ironbee.configureProject",
+        "title": "IronBee: Reconfigure This Project"
+      },
+      {
+        "command": "ironbee.uninstallFromProject",
+        "title": "IronBee: Remove From This Project"
+      },
+      {
+        "command": "ironbee.installBrowsers",
+        "title": "IronBee: Install Verification Browsers"
+      },
+      {
+        "command": "ironbee.openSettings",
+        "title": "IronBee: Open Settings"
+      },
+      {
+        "command": "ironbee.showStatus",
+        "title": "IronBee: Show Status"
+      }
+    ],
+    "configuration": {
+      "title": "IronBee",
+      "properties": {
+        "ironbee.install.suggestOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suggest setting up IronBee when opening a project that isn't set up yet."
+        },
+        "ironbee.install.defaultMode": {
+          "type": "string",
+          "enum": [
+            "assist",
+            "enforce",
+            "monitor"
+          ],
+          "enumDescriptions": [
+            "Verify and guide — surfaces issues and suggests fixes, but never blocks the agent",
+            "Block on verification failure — gates the agent until checks pass (strongest)",
+            "Observe only — records verification results, never blocks or guides"
+          ],
+          "default": "assist",
+          "description": "Default verification mode seeded into the per-project setup picker."
+        },
+        "ironbee.telemetry.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send anonymous usage telemetry (no email/account id)."
+        },
+        "ironbee.privacy.enable": {
+          "type": "boolean",
+          "default": false,
+          "description": "Privacy mode — redact potentially sensitive data from what IronBee captures (writes privacy.enable to ~/.ironbee/config.json). Applies to all projects."
+        },
+        "ironbee.browser.useSystemBrowser": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use the installed Google Chrome instead of downloading Playwright browsers."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc --noEmit -p ./",
+    "browser-versions": "node scripts/resolve-browser-versions.mjs",
+    "build": "npm run browser-versions && node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "vscode:prepublish": "npm run build",
+    "package": "vsce package",
+    "publish": "vsce publish",
+    "release:patch": "release-it --ci -VV",
+    "release:minor": "release-it minor --ci -VV",
+    "release:major": "release-it major --ci -VV"
+  },
+  "dependencies": {
+    "@ironbee-ai/cli": "^0.40.0",
+    "playwright-core": "1.61.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^8.64.0",
+    "@typescript-eslint/parser": "^8.64.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.39.5",
+    "ovsx": "^0.9.0",
+    "release-it": "^17.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

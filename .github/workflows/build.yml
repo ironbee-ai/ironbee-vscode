@@ -1,0 +1,39 @@
+name: NPM Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+
+env:
+  # devtools bundling (once added) must not pull Playwright browsers in CI.
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      # Full install (with optional): the universal build bundles NO devtools, so there's no
+      # better-sqlite3 native to drop — and --omit=optional would also strip rollup's platform
+      # native (@rollup/rollup-<platform>), which vitest needs, breaking `npm test`.
+      - name: Install Dependencies
+        run: npm ci
+      - name: Lint / Typecheck
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build Extension
+        run: npm run build
+      - name: Package VSIX
+        run: npx vsce package
