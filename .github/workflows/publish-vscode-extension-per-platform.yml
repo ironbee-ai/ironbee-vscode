@@ -45,6 +45,7 @@ jobs:
         run: npm run release:${{ github.event.inputs.version_scale }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_ACCESS_TOKEN }}
+          NODE_DEBUG: release-it:*
       - id: bump
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
