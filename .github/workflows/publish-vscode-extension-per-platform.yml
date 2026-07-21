@@ -80,16 +80,23 @@ jobs:
       # optional deps by default, so the platform-native optional deps (e.g. sharp's
       # @img/sharp-<platform>) are fetched for THIS runner's OS/arch.
       - run: npm ci
-      # Bundle @ironbee-ai/devtools at the version the bundled CLI pins — installed on THIS runner
-      # so npm fetches the correct native (sharp/node-pty/frida) for this OS/arch. --no-save keeps
-      # the committed package.json/lockfile untouched (devtools is deliberately NOT a lockfile dep —
-      # the universal build must not bundle it); --include=optional makes the natives explicit.
+      # Bundle @ironbee-ai/devtools at the version the bundled CLI pins — installed on THIS runner so
+      # npm fetches the correct native (sharp/node-pty/frida) for this OS/arch. It MUST be a real
+      # dependency (not --no-save): `vsce package` runs `npm ls` to decide what to bundle and fails on
+      # extraneous packages. This runs in the ephemeral CI checkout, so mutating package.json here does
+      # NOT affect the committed lockfile (which stays devtools-free — the universal build must not
+      # bundle it). --include=optional makes the platform natives explicit.
       - name: Bundle platform-native devtools
         shell: bash
         run: |
           V=$(node node_modules/@ironbee-ai/cli/dist/index.js devtools version)
           echo "Bundling @ironbee-ai/devtools@$V for ${{ matrix.target }}"
-          npm install --no-save --include=optional "@ironbee-ai/devtools@$V"
+          npm pkg set "dependencies.@ironbee-ai/devtools=$V"
+          # devtools pulls playwright, which pins fsevents 2.3.2 while the dev tree dedupes 2.3.3.
+          # On macOS runners (fsevents is macOS-only) that mismatch makes `vsce package`'s internal
+          # `npm ls` fail (ELSPROBLEMS); pin one version so the tree is clean. Inert on Linux/Windows.
+          npm pkg set "overrides.fsevents=2.3.3"
+          npm install --include=optional
       - run: npm run compile
       - run: npm test
       - run: npm run build

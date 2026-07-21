@@ -39,6 +39,10 @@ node_modules/**/CHANGELOG*
 !node_modules/@ironbee-ai/cli/**
 !node_modules/@ironbee-ai/devtools/**
 
+# Windows debug symbols (node-pty prebuilds) — never loaded at runtime on any platform, but ~50 MB
+# of dead weight in every per-platform VSIX. Excluded last so it wins over the re-includes above.
+node_modules/**/*.pdb
+
 # Bundled runtimes shipped in the VSIX (both pure JS — no native libs):
 #   node_modules/@ironbee-ai/cli       — spawned to run `ironbee install`
 #   node_modules/playwright-core       — in-process Chromium installer (browsers NOT shipped)
