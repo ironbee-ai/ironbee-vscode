@@ -24,9 +24,11 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-      # --omit=optional drops the native better-sqlite3 from the bundled devtools (universal VSIX).
+      # Full install (with optional): the universal build bundles NO devtools, so there's no
+      # better-sqlite3 native to drop — and --omit=optional would also strip rollup's platform
+      # native (@rollup/rollup-<platform>), which vitest needs, breaking `npm test`.
       - name: Install Dependencies
-        run: npm ci --omit=optional
+        run: npm ci
       - name: Lint / Typecheck
         run: npm run lint
       - name: Test

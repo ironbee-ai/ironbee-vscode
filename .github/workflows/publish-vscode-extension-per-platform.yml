@@ -96,6 +96,10 @@ jobs:
           # On macOS runners (fsevents is macOS-only) that mismatch makes `vsce package`'s internal
           # `npm ls` fail (ELSPROBLEMS); pin one version so the tree is clean. Inert on Linux/Windows.
           npm pkg set "overrides.fsevents=2.3.3"
+          # Clean slate before the resolving install: mutating deps on top of the `npm ci` tree can
+          # hit npm's optional-deps bug (npm/cli#4828) and drop platform natives (@rollup/@esbuild),
+          # which then breaks `npm test`/`npm run build`. A fresh install resolves them correctly.
+          rm -rf node_modules package-lock.json
           npm install --include=optional
       - run: npm run compile
       - run: npm test
