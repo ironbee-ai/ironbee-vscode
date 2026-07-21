@@ -41,15 +41,20 @@ function fakeSpawn(exitCode: number | 'error') {
 // Captures the (cmd, args, options) the injected spawn receives; child never closes unless told.
 function capturingSpawn() {
     const calls: Array<{ cmd: string; args: string[]; options: { env?: NodeJS.ProcessEnv } }> = [];
+    let onCall: () => void = () => {};
+    // Resolves the first time spawn is invoked — lets tests await the call deterministically instead
+    // of polling (the async npx PATH check before spawn can take longer than a fixed tick budget in CI).
+    const called: Promise<void> = new Promise<void>((resolve) => (onCall = resolve));
     const spawn = ((cmd: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
         calls.push({ cmd, args, options });
+        onCall();
         const child = new EventEmitter() as EventEmitter & { stdout: null; stderr: null; kill: (s?: string) => void };
         child.stdout = null; // stdio:'ignore' → no pipes
         child.stderr = null;
         child.kill = () => {};
         return child;
     }) as never;
-    return { spawn, calls };
+    return { spawn, calls, called };
 }
 
 const spec = '@ironbee-ai/devtools@0.23.0';
@@ -107,13 +112,11 @@ describe('prewarmDevtools', () => {
         if (process.platform === 'win32') {
             return;
         }
-        const { spawn, calls } = capturingSpawn();
-        // Never resolves (child never closes) — we only assert on the captured invocation. Poll until
-        // the async npx-resolution completes and spawn is called.
+        const { spawn, calls, called } = capturingSpawn();
+        // Never resolves (child never closes) — we only assert on the captured invocation, and await
+        // `called` so we wait for the async npx-resolution to reach spawn (no fixed-tick polling).
         void prewarmDevtools({ spec, resolvePath: async () => binWithNpx, env: {}, spawn });
-        for (let i = 0; i < 50 && calls.length === 0; i++) {
-            await new Promise((r) => setImmediate(r));
-        }
+        await called;
         expect(calls).toHaveLength(1);
         expect(calls[0].cmd).toBe('npx');
         // -y installs, --package <spec>, then `-- node --version` runs (and thus installs) without starting the server.
