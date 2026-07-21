@@ -75,11 +75,11 @@ on account switch.
 
 ## Bundling / delivery (two tracks)
 
-- **Universal VSIX** (`publish-vscode-extension.yml`) bundles only pure-JS `@ironbee-ai/cli` +
+- **Universal VSIX** (`publish-vscode-extension-universal.yml`) bundles only pure-JS `@ironbee-ai/cli` +
   `playwright-core`. Chromium is pre-installed in-process at the pinned revision via
   playwright-core (node-independent). `@ironbee-ai/devtools` (+ native deps) is installed on the
   user machine via `npx` — best-effort pre-warm at activation, otherwise at MCP-server startup.
-- **Per-platform VSIX** (`publish-vscode-extension-per-platform.yml`) additionally bundles
+- **Per-platform VSIX** (`publish-vscode-extension.yml`) additionally bundles
   `@ironbee-ai/devtools` + its native deps (sharp/node-pty/frida) built on a real runner per
   OS/arch, published with `--target`. Devtools then runs via the editor's own Node (no npx). Note
   the per-platform job installs devtools with `npm install --no-save --include=optional` so the
