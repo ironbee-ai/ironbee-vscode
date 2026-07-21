@@ -108,6 +108,7 @@ jobs:
       - name: Package (platform-specific)
         run: npx vsce package --target ${{ matrix.target }} -o "ironbee-vscode-${{ matrix.target }}.vsix"
       - name: Publish to Open VSX (platform-specific)
+        shell: bash
         run: npx ovsx publish "ironbee-vscode-${{ matrix.target }}.vsix" --target ${{ matrix.target }} --pat "$OPEN_VSX_TOKEN"
         env:
           OPEN_VSX_TOKEN: ${{ secrets.OPEN_VSX_TOKEN }}
