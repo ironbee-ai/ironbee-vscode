@@ -56,8 +56,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: darwin-x64
-            os: macos-13
+          # darwin-x64 (Intel) dropped: GitHub is retiring the macos-13 Intel runner, and
+          # Intel Macs fall back to the universal VSIX (devtools via npx). Re-enable if needed:
+          # - target: darwin-x64
+          #   os: macos-13
           - target: darwin-arm64
             os: macos-14
           - target: linux-x64
