@@ -25,6 +25,8 @@ export interface AuthManagerDeps {
     openUrl: (url: string) => Promise<boolean | void>;
     fetchFn?: typeof fetch;
     now?: () => number;
+    /** Optional fire-and-forget product-signal sink (never throws). */
+    onEvent?: (name: string, props?: Record<string, unknown>) => void;
 }
 
 /** Owns the Cognito session: PKCE loopback sign-in, refresh, sign-out. */
@@ -56,6 +58,7 @@ export class AuthManager {
             // First social sign-in for an existing user links the identity and cancels that attempt;
             // the second attempt succeeds. Retry once, automatically (per the backend hand-off).
             if (err instanceof CognitoCallbackError && err.isProviderLinkRetry() && !signal?.aborted) {
+                this.deps.onEvent?.('signin_provider_link_retry');
                 await this.attemptSignIn(timeoutMs, signal);
                 return;
             }

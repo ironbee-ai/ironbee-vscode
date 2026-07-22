@@ -246,9 +246,14 @@ CLI-1..CLI-5 are all **verifications that passed** (no required work). CLI-OPT-1
 
 - **[CLI-1 — ✔ VERIFIED] Devtools override already exists.** `config.ironbeeDevTools.mcp`
   (full command/args/env replacement) + `config.ironbeeDevTools.env` (`config.ts:2148-2151,
-  2181-2208`). The extension writes this block into **global** `~/.ironbee/config.json` before
-  install (global-only — see EXT-5 / CLI-2b) — **no CLI change**. Do NOT invent
-  `devtools.mcpCommand`/`mcpArgs` (fictional).
+  2181-2208`). **PER-PROJECT (not global):** rather than writing the bundled `mcp` block into the
+  shared `~/.ironbee/config.json` (which affects every project + goes stale on upgrade), the
+  extension passes it as the **`IRONBEE_DEVTOOLS_MCP`** env (a full JSON `{command,args,env}`) to
+  each `ironbee install` spawn. The CLI's `resolveDevToolsEntryFromEnv` (`config.ts:2748`) gives
+  that env top precedence and bakes it into THIS project's own `.cursor/mcp.json` — zero global
+  writes. Empirically verified. The extension still `clearDevtoolsMcp()`s any stale global block a
+  prior version left behind (migration). npx/universal mode keeps the generic (non-stale)
+  browser-suppress `ironbeeDevTools.env`. Do NOT invent `devtools.mcpCommand`/`mcpArgs` (fictional).
 - **[CLI-2 — ✔ VERIFIED] The override round-trips into the written project MCP entries** — the
   load-bearing check for the whole bundling approach, and it holds. All clients compute the
   entry at write time via `getComposeDevToolsMcpEntry(projectDir)` and serialize it: Cursor →
@@ -578,17 +583,39 @@ could disrupt projects the user never intended to touch, and verification settin
   optionally server-side collector tokens whose name carries the `ironbee-vscode:` prefix
   (to avoid 10-cap pollution). **Do NOT** delete `~/.ironbee/config.json`'s collector token by
   default (shared with the CLI), and **do NOT** touch the shared
-  `~/.ironbee-devtools/config.json` — its anonymous id is shared with `ironbee-devtools-vscode`
-  (EXT-9), so there is no ironbee-vscode-specific state to remove there.
+  `~/.ironbee/telemetry.json` — its anonymous id is shared with all IronBee tools (CLI, devtools,
+  the editor extensions) (EXT-9), so there is no ironbee-vscode-specific state to remove there.
 - **Self-update:** best-effort, non-blocking poll of the OpenVSX API with backoff; offer to
   update on a newer version (mirror devtools-vscode).
 
 **[EXT-9] Telemetry**
-- Show the notice on first run **before** any event is emitted; respect
-  `ironbee.telemetry.enable` (and the shared anonymous-id file). Events contain only an
-  anonymous id + event name — **no email/account id** (which would de-anonymize). Storage
-  path: reuse `~/.ironbee-devtools/config.json` for a shared anonymous id (single decision;
-  do not split into a second file). Emit `sign_in`, `install`, `switch_account` events.
+- On by default (opt-out via `ironbee.telemetry.enable`); no consent notice. `distinct_id` is the
+  shared anonymous id from `~/.ironbee/telemetry.json` (single decision — all IronBee tools, incl.
+  the CLI, read/write it; do not split into a second file). When the user is signed in, their email
+  rides along as the PostHog **person property** via `properties.$set.email` (the reserved key
+  PostHog recognizes — not a custom prop), read from an in-memory cache populated by `refreshStatus`
+  (never a per-event API call) and cleared on sign-out. Plus coarse env props (source, extension/
+  node version, os platform/arch, timezone). Transport: raw HTTPS `POST /i/v0/e/` to
+  `us.i.posthog.com` (no posthog-node client).
+- **All** event names are prefixed `cursor_ext_`: lifecycle `cursor_ext_installed` /
+  `_activated` / `_deactivated` / `_uninstalled` / `_error`, product `cursor_ext_sign_in` /
+  `cursor_ext_switch_account`, project `cursor_ext_project_setup` / `cursor_ext_project_uninstall`
+  (+ their `_failed` variants). **Every** caught failure is reported as `cursor_ext_error`
+  (fire-and-forget, non-blocking) with a `context` label + `error_type`/`error_message` and a
+  `surfaced` flag: `reportError` (surfaced=true) shows the message + an "Open issue on GitHub"
+  action deep-linking to the repo's prefilled new-issue form; `logError` (surfaced=false) only
+  writes to the output channel — for best-effort/background failures we don't interrupt the user
+  over. Expected control-flow catches (universal build has no bundled devtools, fs existence
+  checks) are NOT errors and stay silent. A safety-net wraps every command handler (VS Code
+  swallows a handler's rejected promise) and `activate`, so no uncaught error escapes unreported.
+- **Product/diagnostic signals** (not errors): `cursor_ext_devtools_mode` (bundled vs npx),
+  `cursor_ext_devtools_prewarm`, `cursor_ext_browser_install` /
+  `cursor_ext_browser_system_fallback_accepted`, `cursor_ext_setup_cancelled` (with `at` stage),
+  `cursor_ext_account_switch_noop`, `cursor_ext_collector_token_rotated`,
+  `cursor_ext_token_cap_recovered` / `cursor_ext_token_cap_blocked`,
+  `cursor_ext_signin_provider_link_retry`. `AccountManager`/`AuthManager` take an optional injected
+  telemetry sink (`event`/`error`) so their internal rotations, cap-handling, and otherwise-swallowed
+  errors surface without importing VS Code.
 
 **[EXT-10] Packaging & publishing**
 - `.vscodeignore`: keep `@ironbee-ai/cli`, `@ironbee-ai/devtools (≥0.17.0)`,

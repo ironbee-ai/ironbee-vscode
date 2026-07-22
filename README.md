@@ -66,7 +66,8 @@ Search "IronBee" in Settings:
 ## Privacy
 
 Sign-in tokens are stored in the editor's encrypted secret storage. Telemetry, when enabled, is
-anonymous and never includes your email or account id.
+keyed to an anonymous id; while you're signed in, your account email is attached so usage can be
+tied to your account. Turn it off anytime with the **Telemetry** setting.
 
 ## License
 
