@@ -109,6 +109,28 @@ describe('runInstall', () => {
         expect(logs.join('\n')).toMatch(/failed to start.*ENOENT/);
     });
 
+    it('passes ctx.env (e.g. IRONBEE_DEVTOOLS_MCP) into the spawn env alongside ELECTRON_RUN_AS_NODE', async () => {
+        await fs.mkdir(path.join(dir, '.ironbee'));
+        await fs.writeFile(path.join(dir, '.ironbee', 'config.json'), '{}');
+        let capturedEnv: NodeJS.ProcessEnv | undefined;
+        const capturingSpawn = ((_cmd: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+            capturedEnv = options.env;
+            const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            setImmediate(() => child.emit('close', 0));
+            return child;
+        }) as unknown as RunnerContext['spawn'];
+        const mcpJson = '{"command":"/ed/node","args":["/ext/devtools/dist/index.js"]}';
+        const ctx: RunnerContext = {
+            nodePath: 'node', cliEntry: '/cli.js', spawn: capturingSpawn,
+            env: { IRONBEE_DEVTOOLS_MCP: mcpJson },
+        };
+        await runInstall(ctx, req());
+        expect(capturedEnv?.IRONBEE_DEVTOOLS_MCP).toBe(mcpJson);
+        expect(capturedEnv?.ELECTRON_RUN_AS_NODE).toBe('1'); // ours is merged, not clobbering the base
+    });
+
     it('redacts secrets streamed to the log sink', async () => {
         await fs.mkdir(path.join(dir, '.ironbee'));
         await fs.writeFile(path.join(dir, '.ironbee', 'config.json'), '{}');

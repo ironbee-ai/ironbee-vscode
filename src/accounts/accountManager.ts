@@ -10,6 +10,12 @@ const TOKEN_ROTATE_SKEW_MS: number = 7 * 24 * 60 * 60 * 1000;
 /** Reuse the cached token, rotate it (near/at expiry), or mint fresh (gone/revoked). */
 type TokenStatus = 'usable' | 'rotate' | 'gone';
 
+/** Fire-and-forget telemetry sink: product signals + otherwise-swallowed error reporting. */
+export interface AccountTelemetry {
+  event(name: string, props?: Record<string, unknown>): void;
+  error(context: string, err: unknown): void;
+}
+
 export interface AccountManagerDeps {
   console: ConsoleClient;
   store: TokenStore;
@@ -21,6 +27,8 @@ export interface AccountManagerDeps {
   refreshSession: () => Promise<void>;
   /** Injectable clock (for expiry checks/tests). */
   now?: () => number;
+  /** Optional telemetry (never throws); records rotations/cap-handling + swallowed errors. */
+  telemetry?: AccountTelemetry;
 }
 
 /**
@@ -76,6 +84,7 @@ export class AccountManager {
         if (previous === targetAccountId) {
             // Already active server-side, but the local session/token may be stale — refresh the
             // claim before minting/writing so we never act against a stale custom:account_id.
+            this.deps.telemetry?.event('account_switch_noop');
             await this.deps.refreshSession();
             await this.doEnsureCollectorToken(targetAccountId);
             return;
@@ -98,10 +107,11 @@ export class AccountManager {
         try {
             await this.deps.console.switchAccount(previousAccountId);
             await this.deps.refreshSession();
-        } catch {
+        } catch (err) {
             // Rollback failed (e.g. dead session). Local view diverges from server —
             // mark dirty so the next operation re-fetches (and re-refreshes) before trusting state.
             this.dirty = true;
+            this.deps.telemetry?.error('account-switch-rollback', err);
         }
     }
 
@@ -126,8 +136,11 @@ export class AccountManager {
                 return;
             }
             if (status === 'rotate') {
+                this.deps.telemetry?.event('collector_token_rotated', { reason: 'near_expiry' });
                 // Delete the near-expiry token first so rotations don't pile up toward the 10-cap.
-                await this.deps.console.deleteAccessToken(cached.id).catch((): void => {});
+                await this.deps.console
+                    .deleteAccessToken(cached.id)
+                    .catch((e: unknown): void => this.deps.telemetry?.error('token-rotate-delete-old', e));
             }
         }
         const minted: MintedToken = await this.mintWithCapHandling();
@@ -139,8 +152,9 @@ export class AccountManager {
         let list: AccessTokenRecord[];
         try {
             list = await this.deps.console.listAccessTokens();
-        } catch {
+        } catch (err) {
             // Transient list failure — don't force a needless mint; reuse the cached token.
+            this.deps.telemetry?.error('token-status-check (reused cached token)', err);
             return 'usable';
         }
         const found: AccessTokenRecord | undefined = list.find((t: AccessTokenRecord): boolean => t.id === id);
@@ -167,13 +181,16 @@ export class AccountManager {
                 const list: AccessTokenRecord[] = await this.deps.console.listAccessTokens();
                 const owned: AccessTokenRecord | undefined = list.find((t: AccessTokenRecord): boolean => t.name.startsWith(TOKEN_LABEL_PREFIX));
                 if (!owned) {
+                    this.deps.telemetry?.event('token_cap_blocked'); // at cap, nothing of ours to reclaim
                     throw new Error(
                         'This account has reached its 10-token limit and none belong to IronBee for VS Code. ' +
               'Remove an access token from the IronBee console, then try again.',
                     );
                 }
                 await this.deps.console.deleteAccessToken(owned.id);
-                return await this.deps.console.mintAccessToken(label);
+                const reminted: MintedToken = await this.deps.console.mintAccessToken(label);
+                this.deps.telemetry?.event('token_cap_recovered'); // reclaimed an owned token + re-minted
+                return reminted;
             }
             throw err;
         }

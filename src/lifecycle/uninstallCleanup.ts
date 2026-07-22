@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { homeIronbeeConfigPath } from '../util/atomicWrite';
+import { isExtensionOwnedDevtoolsMcp, type DevtoolsMcpEntry } from '../config/ironbeeConfig';
 
 /** Folder-name prefix identifying any installed version of this extension. */
 export const EXTENSION_ID_PREFIX: string = 'ironbee-ai.ironbee-vscode-';
@@ -75,6 +76,33 @@ export function clearCollectorTokenFromGlobalConfig(configPath: string = homeIro
             return;
         }
         delete collector.oauthToken;
+        fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
+    } catch {
+        /* best-effort */
+    }
+}
+
+/**
+ * On a full extension uninstall, drop a devtools `mcp` override from the GLOBAL ~/.ironbee/config.json
+ * ONLY if a prior version of THIS extension wrote it (path inside our editor-extensions dir) — so it
+ * doesn't linger and break standalone CLI users after the extension is gone. Never touches a user's
+ * own hand-set/CLI override. Synchronous + best-effort. (Newer versions pass the entry per-project via
+ * IRONBEE_DEVTOOLS_MCP and never write global, but older ones did — this migrates that away on removal.)
+ */
+export function clearOwnedDevtoolsMcpFromGlobalConfig(configPath: string = homeIronbeeConfigPath()): void {
+    try {
+        if (!fs.existsSync(configPath)) {
+            return;
+        }
+        const cfg: Record<string, unknown> = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+        const devtools: Record<string, unknown> | undefined =
+            cfg.ironbeeDevTools !== null && typeof cfg.ironbeeDevTools === 'object'
+                ? (cfg.ironbeeDevTools as Record<string, unknown>)
+                : undefined;
+        if (devtools === undefined || !isExtensionOwnedDevtoolsMcp(devtools.mcp as DevtoolsMcpEntry | undefined)) {
+            return; // absent or not ours — leave it
+        }
+        delete devtools.mcp;
         fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2) + '\n');
     } catch {
         /* best-effort */

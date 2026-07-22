@@ -133,6 +133,50 @@ export async function writeDevtoolsMcp(
     await atomicWriteFile(configPath, JSON.stringify(cfg, null, 2) + '\n');
 }
 
+export interface DevtoolsMcpEntry {
+    command: string;
+    args: string[];
+    env?: Record<string, string>;
+}
+
+/**
+ * True when a global `ironbeeDevTools.mcp` block was (almost certainly) written by a PRIOR version of
+ * THIS extension — i.e. its args point inside an editor extensions dir owned by us
+ * (`…/extensions/ironbee-ai.ironbee-vscode-…`). Used to migrate away from the old global-write
+ * behavior WITHOUT clobbering an override a user set by hand or via the CLI for standalone use.
+ */
+export function isExtensionOwnedDevtoolsMcp(mcp: DevtoolsMcpEntry | undefined): boolean {
+    if (mcp === undefined || !Array.isArray(mcp.args)) {
+        return false;
+    }
+    return mcp.args.some(
+        (a: unknown): boolean => typeof a === 'string' && /[/\\]extensions[/\\]ironbee-ai\.ironbee-vscode/i.test(a),
+    );
+}
+
+/**
+ * Remove a stale `ironbeeDevTools.mcp` override so the CLI falls back to its default. The extension
+ * no longer writes this block to the SHARED global config (it passes the bundled entry per-project
+ * via `IRONBEE_DEVTOOLS_MCP` at install time instead), so on activation it migrates away any block a
+ * prior version left in global. Pass `shouldClear` to remove ONLY entries we own — never a user's
+ * own hand-set/CLI override (which would break their standalone CLI usage). No-op when nothing matches.
+ */
+export async function clearDevtoolsMcp(
+    configPath: string = homeIronbeeConfigPath(),
+    shouldClear?: (mcp: DevtoolsMcpEntry) => boolean,
+): Promise<void> {
+    const cfg: IronbeeGlobalConfig = await readGlobalConfig(configPath);
+    const devtools: NonNullable<IronbeeGlobalConfig['ironbeeDevTools']> | undefined = cfg.ironbeeDevTools;
+    if (devtools?.mcp === undefined) {
+        return;
+    }
+    if (shouldClear !== undefined && !shouldClear(devtools.mcp)) {
+        return; // present but not ours — leave the user's override untouched
+    }
+    delete devtools.mcp;
+    await atomicWriteFile(configPath, JSON.stringify(cfg, null, 2) + '\n');
+}
+
 /** True when a usable collector credential is already present (skip-if-authed, EXT-1). */
 export function hasCollectorToken(cfg: IronbeeGlobalConfig): boolean {
     const t: string | undefined = cfg.collector?.oauthToken;

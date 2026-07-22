@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import {
     EXTENSION_ID_PREFIX,
     clearCollectorTokenFromGlobalConfig,
+    clearOwnedDevtoolsMcpFromGlobalConfig,
     isRealUninstall,
     readObsoleteMap,
     runCliUninstallAll,
@@ -19,7 +20,8 @@ import { AccountManager } from './accounts/accountManager';
 import {
     writeCollectorToken,
     writeDevtoolsEnv,
-    writeDevtoolsMcp,
+    clearDevtoolsMcp,
+    isExtensionOwnedDevtoolsMcp,
     writeEnvironmentEndpoints,
     writePrivacyMode,
     clearCollectorToken,
@@ -37,22 +39,36 @@ import { MODE_DESCRIPTIONS, PLATFORM_DESCRIPTIONS } from './ui/descriptions';
 import { runUninstall, type RunnerContext, type VerificationMode } from './runtime/cliRunner';
 import { StatusBar } from './ui/statusBar';
 import { ensureAnonymousId, emitEvent } from './lifecycle/telemetry';
+import { redact } from './util/redact';
 import browserVersions from './generated/browser-versions.json';
 
 const require_: NodeJS.Require = createRequire(__filename);
 
 let statusBar: StatusBar | undefined;
-const output: () => vscode.OutputChannel = (): vscode.OutputChannel => outputChannel;
 let outputChannel: vscode.OutputChannel;
 let extensionContext: vscode.ExtensionContext | undefined;
 let authManager: AuthManager | undefined; // kept for deactivate (full sign-out on real uninstall)
+let currentUserEmail: string | undefined; // last-known signed-in email, attached to telemetry ($set.email)
+// Bundled devtools entry as an IRONBEE_DEVTOOLS_MCP JSON, passed to `ironbee install` so it bakes a
+// PER-PROJECT .cursor/mcp.json (no global config write). undefined in npx/universal mode.
+let devtoolsMcpJson: string | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+    try {
+        await activateInner(context);
+    } catch (err) {
+        // A fatal activation error would otherwise only show VS Code's generic banner — record it.
+        emitErrorEvent('activate', err, false);
+        throw err; // still let VS Code mark activation as failed
+    }
+}
+
+async function activateInner(context: vscode.ExtensionContext): Promise<void> {
     extensionContext = context;
     outputChannel = vscode.window.createOutputChannel('IronBee');
     // Prod by default; a developer's ~/.ironbee/vscode/config.json overrides it (dev/staging).
     const envConfig: EnvConfig = await loadEnvConfig().catch((e: unknown): EnvConfig => {
-        log(`~/.ironbee/vscode/config.json ignored (${(e as Error).message}); using prod defaults`);
+        logError('env-config-load (ignored; using prod defaults)', e);
         return DEFAULT_ENV_CONFIG;
     });
     log(`environment: ${envConfig.env}`);
@@ -62,6 +78,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         env: envConfig,
         store,
         openUrl: async (url: string): Promise<boolean> => vscode.env.openExternal(vscode.Uri.parse(url)),
+        onEvent: (name: string, props?: Record<string, unknown>): void => track(name, props),
     });
     authManager = auth;
     const console: ConsoleClient = new ConsoleClient(envConfig.consoleApiBase, (force?: boolean): Promise<string> => auth.getIdToken(force));
@@ -74,6 +91,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         refreshSession: async (): Promise<void> => {
             await auth.getIdToken(true);
         },
+        telemetry: {
+            event: (name: string, props?: Record<string, unknown>): void => track(name, props),
+            error: (context: string, err: unknown): void => logError(context, err),
+        },
     });
 
     statusBar = new StatusBar();
@@ -82,20 +103,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Point devtools at the bundled copy (platform-specific VSIX) or the npx default (universal
     // VSIX). In both cases tell it NOT to download browsers — the extension pre-installs Chromium.
     const devtoolsMode: 'bundled' | 'npx' = await wireDevtools().catch((e: unknown): 'npx' => {
-        log(`could not wire devtools: ${(e as Error).message}`);
+        logError('devtools-wiring (fell back to npx)', e);
         return 'npx' as const;
     });
 
     const svc: Services = { auth, console, accounts, envConfig };
     registerCommands(context, svc);
-    await refreshStatus(auth, console);
+    await refreshStatus(auth, console); // populates currentUserEmail before any event fires
+
+    // Diagnostic: which devtools delivery ran — bundled (platform-specific VSIX) vs npx (universal).
+    // After refreshStatus so a signed-in user's email rides along.
+    track('devtools_mode', { mode: devtoolsMode });
 
     // Mirror the privacy-mode setting into ~/.ironbee/config.json (at activation + on change).
-    void syncPrivacyMode();
+    void syncPrivacyMode().catch((e: unknown): void => logError('privacy-sync', e));
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent): void => {
             if (e.affectsConfiguration('ironbee.privacy.enable')) {
-                void syncPrivacyMode();
+                void syncPrivacyMode().catch((err: unknown): void => logError('privacy-sync', err));
             }
         }),
     );
@@ -103,16 +128,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // Non-blocking + guarded so nothing here fails activation (commands are already registered).
     // Chromium is always pre-installed (node-independent); the npx devtools pre-warm only applies
     // to the universal build (the platform-specific build bundles devtools, so nothing to fetch).
-    void ensureBrowsersOnUpgrade(context).catch((e: unknown): void => log(`browser pre-install skipped: ${(e as Error).message}`));
+    void ensureBrowsersOnUpgrade(context).catch((e: unknown): void => logError('browser-preinstall', e));
     if (devtoolsMode === 'npx') {
-        void ensureDevtoolsPrewarmed(context).catch((e: unknown): void => log(`devtools pre-warm skipped: ${(e as Error).message}`));
+        void ensureDevtoolsPrewarmed(context).catch((e: unknown): void => logError('devtools-prewarm', e));
     }
     // Onboarding nudge — runs INDEPENDENTLY (never chained to the network rotation below, so a slow/
     // hung rotation can't stop it from firing). It gates on the config token, so at worst a valid-
     // session user whose token gets refilled a moment later sees one dismissible prompt.
-    void firstRunAndSuggest(context, auth).catch((e: unknown): void => log(`first-run/suggest skipped: ${(e as Error).message}`));
+    void firstRunAndSuggest(context, auth).catch((e: unknown): void => logError('first-run/suggest', e));
     // Proactively rotate/refill the collector token before its ~90-day expiry (quietly, if signed in).
-    void rotateCollectorTokenOnStartup(svc).catch((e: unknown): void => log(`startup token check skipped: ${(e as Error).message}`));
+    void rotateCollectorTokenOnStartup(svc).catch((e: unknown): void => logError('startup-token-check', e));
+    // Extension-lifecycle telemetry (install/upgrade + activated). Fire-and-forget.
+    void trackActivationLifecycle(context).catch((): void => {});
 }
 
 /**
@@ -129,7 +156,7 @@ async function rotateCollectorTokenOnStartup(svc: Services): Promise<void> {
         const current: Account = await svc.console.currentAccount();
         await svc.accounts.ensureCollectorToken(current.id);
     } catch (err) {
-        log(`startup collector-token check failed: ${(err as Error).message}`);
+        logError('startup-collector-token', err);
     }
 }
 
@@ -148,23 +175,69 @@ function resolveBundledDevtoolsEntry(): string | undefined {
  * Otherwise the CLI keeps its `npx @ironbee-ai/devtools` default and we just suppress its browser
  * download (Chromium is pre-installed by the extension).
  *
- * NOTE (bundled variant): the persisted MCP path is version-scoped to the extension dir, so on an
- * extension upgrade already-set-up projects should be reconfigured to refresh it. TODO for the
- * platform-specific track: re-run `ironbee install` for registered projects when the path changes.
+ * The bundled entry is NOT written to the shared global config; it is passed per-project via
+ * `IRONBEE_DEVTOOLS_MCP` at `ironbee install` time, which bakes it into each project's own
+ * `.cursor/mcp.json`. NOTE: that baked path is still version-scoped to the extension dir, so on an
+ * extension upgrade already-set-up projects should be re-configured (re-run setup) to refresh it.
  */
 async function wireDevtools(): Promise<'bundled' | 'npx'> {
     const wiring: ReturnType<typeof decideDevtoolsWiring> = decideDevtoolsWiring(resolveBundledDevtoolsEntry(), process.execPath);
+    // We NEVER write the devtools `mcp` entry into the SHARED global ~/.ironbee/config.json anymore:
+    // that version-scoped absolute path affects every project and goes stale on upgrade/switch. Migrate
+    // away any block a PRIOR version of this extension left in global — but ONLY ours (path inside our
+    // editor-extensions dir), never a user's own hand-set/CLI override.
+    await clearDevtoolsMcp(undefined, isExtensionOwnedDevtoolsMcp);
     if (wiring.mode === 'bundled') {
-        await writeDevtoolsMcp(wiring.mcp);
-        log('devtools: bundled (platform-specific) — runs via the editor Node, no npx');
+        // Carry the bundled entry as IRONBEE_DEVTOOLS_MCP for `ironbee install`, which bakes it into
+        // THIS project's own .cursor/mcp.json (per-project override; no global write).
+        devtoolsMcpJson = JSON.stringify(wiring.mcp);
+        log('devtools: bundled (platform-specific) — per-project mcp via IRONBEE_DEVTOOLS_MCP, no global write');
         return 'bundled';
     }
+    devtoolsMcpJson = undefined;
+    // npx (universal): the CLI bakes its own `npx @ironbee-ai/devtools` default entry; we only suppress
+    // the browser download. This env is generic + non-version-scoped, so it never causes stale paths.
     await writeDevtoolsEnv(wiring.env);
+    log('devtools: npx (universal) — CLI default entry, browser download suppressed');
     return 'npx';
 }
 
+const EXTENSION_ID: string = 'ironbee-ai.ironbee-vscode';
+const GITHUB_ISSUES_BASE: string = 'https://github.com/ironbee-ai/ironbee-vscode/issues/new';
+const TELEMETRY_VERSION_KEY: string = 'ironbee.telemetry.lastVersion';
+const EVENT_PREFIX: string = 'cursor_ext_';
+
 function telemetryEnabled(): boolean {
     return vscode.workspace.getConfiguration('ironbee').get('telemetry.enable', true);
+}
+
+function extensionVersion(): string {
+    return (vscode.extensions.getExtension(EXTENSION_ID)?.packageJSON as { version?: string } | undefined)?.version ?? '';
+}
+
+/**
+ * Coarse context attached to every event. When a user is signed in, the last-known email (cached
+ * from refreshStatus — never a per-event API call) rides along BOTH as an event property (`email`,
+ * for immediate per-event filtering) AND as the PostHog person property via `$set.email` (the
+ * standard reserved key PostHog's UI recognizes, for People search). The distinct id stays the
+ * shared anonymous id.
+ */
+function baseTelemetryProperties(): Record<string, unknown> {
+    const props: Record<string, unknown> = {
+        source: 'ironbee-vscode',
+        extension_id: EXTENSION_ID,
+        extension_version: extensionVersion(),
+        node_version: process.version,
+        os_platform: process.platform,
+        os_arch: process.arch,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        timestamp: new Date().toISOString(),
+    };
+    if (currentUserEmail) {
+        props.email = currentUserEmail; // event property — immediate per-event filtering
+        props.$set = { email: currentUserEmail }; // person property — People search + persists
+    }
+    return props;
 }
 
 /**
@@ -181,11 +254,117 @@ async function syncPrivacyMode(): Promise<void> {
     if (explicit === undefined) {
         return; // not set in the editor — leave whatever the CLI/config has
     }
-    await writePrivacyMode(explicit).catch((e: unknown): void => log(`could not sync privacy mode: ${(e as Error).message}`));
+    await writePrivacyMode(explicit).catch((e: unknown): void => logError('privacy-sync', e));
 }
 
-function track(event: string): void {
-    void emitEvent(event, { enabled: telemetryEnabled() }).catch((): void => {});
+/**
+ * Fire-and-forget event. Callers pass the SHORT name; every event is namespaced with the
+ * `cursor_ext_` prefix here (single source of truth). Never throws or blocks.
+ */
+function track(event: string, properties: Record<string, unknown> = {}): void {
+    void emitEvent(EVENT_PREFIX + event, {
+        enabled: telemetryEnabled(),
+        properties: { ...baseTelemetryProperties(), ...properties },
+    }).catch((): void => {});
+}
+
+/**
+ * Extension-lifecycle telemetry at activation: a `cursor_ext_installed` on first run after an
+ * install/upgrade (detected by comparing the stored version), then always `cursor_ext_activated`.
+ * NOTE: globalState survives uninstall, so a reinstall of the SAME version won't re-fire `installed`.
+ */
+async function trackActivationLifecycle(context: vscode.ExtensionContext): Promise<void> {
+    const version: string = extensionVersion();
+    const previous: string | undefined = context.globalState.get<string>(TELEMETRY_VERSION_KEY);
+    if (previous !== version) {
+        track('installed', { previous_version: previous ?? null, upgrade: previous !== undefined });
+        await context.globalState.update(TELEMETRY_VERSION_KEY, version).then(undefined, (): void => {});
+    }
+    track('activated');
+}
+
+/** Build a prefilled GitHub new-issue URL for our repo (query params encoded). */
+function buildGitHubIssueUrl(title: string, body?: string): string {
+    const params: URLSearchParams = new URLSearchParams();
+    params.set('title', title);
+    if (body) {
+        params.set('body', body);
+    }
+    return `${GITHUB_ISSUES_BASE}?${params.toString()}`;
+}
+
+/**
+ * Format an error for the issue body: extension version, type, message, stack. Uses `**` headings so
+ * `##` is not URL-encoded to `%23%23` in the issue URL.
+ */
+function formatErrorForIssueBody(error: unknown, version: string): string {
+    const lines: string[] = [];
+    if (version) {
+        lines.push(`**Extension version:** ${version}`, '');
+    }
+    if (error instanceof Error) {
+        lines.push(
+            '**Error details**',
+            '',
+            `**Type:** \`${error.constructor?.name ?? 'Error'}\``,
+            '',
+            `**Message:** ${error.message}`,
+            '',
+            '**Stack:**',
+            '```',
+            error.stack ?? '(no stack)',
+            '```',
+        );
+        // redact() the whole body — a message/stack can carry ibt_ tokens, JWTs, OAuth codes, and
+        // this text is prefilled into a (potentially public) GitHub issue URL.
+        return redact(lines.join('\n'));
+    }
+    lines.push(`**Message:** ${String(error)}`);
+    return redact(lines.join('\n'));
+}
+
+/**
+ * Fire a `cursor_ext_error` event (fire-and-forget). `surfaced` records whether the failure was also
+ * shown to the user (reportError) or only logged (logError), so both can be filtered in PostHog.
+ */
+function emitErrorEvent(context: string, error: unknown, surfaced: boolean): void {
+    // redact() before anything leaves the machine — error strings can carry ibt_ tokens, JWTs,
+    // OAuth codes, bearer headers, etc.
+    const rawMessage: string | undefined = error instanceof Error ? error.message : error !== undefined ? String(error) : undefined;
+    track('error', {
+        context: redact(context).slice(0, 200),
+        surfaced,
+        error_type: error instanceof Error ? (error.constructor?.name ?? 'Error') : undefined,
+        error_message: rawMessage !== undefined ? redact(rawMessage) : undefined,
+    });
+}
+
+/**
+ * Silent error report: write to the output channel AND fire `cursor_ext_error` — no UI. For
+ * best-effort/background failures we don't want to interrupt the user over. Never throws or blocks.
+ */
+function logError(context: string, error: unknown): void {
+    log(redact(`${context}: ${error instanceof Error ? error.message : String(error)}`));
+    emitErrorEvent(context, error, false);
+}
+
+/**
+ * Surface a failure: fire a `cursor_ext_error` event and show the message with an "Open issue on
+ * GitHub" action that deep-links to our repo's new-issue form (prefilled with the error when given).
+ */
+function reportError(message: string, error?: unknown, opts: { warning?: boolean } = {}): void {
+    emitErrorEvent(message, error, true);
+    const show: typeof vscode.window.showErrorMessage = opts.warning
+        ? vscode.window.showWarningMessage
+        : vscode.window.showErrorMessage;
+    void show(message, 'Open issue on GitHub').then((choice: string | undefined): void => {
+        if (choice !== 'Open issue on GitHub') {
+            return;
+        }
+        const title: string = redact(message.slice(0, 100).replace(/\s+/g, ' ').trim());
+        const body: string | undefined = error !== undefined ? formatErrorForIssueBody(error, extensionVersion()) : undefined;
+        void vscode.env.openExternal(vscode.Uri.parse(buildGitHubIssueUrl(title, body)));
+    });
 }
 
 export async function deactivate(): Promise<void> {
@@ -210,17 +389,27 @@ export async function deactivate(): Promise<void> {
             },
             extensionIdPrefix: EXTENSION_ID_PREFIX,
         });
+        const enabled: boolean = telemetryEnabled();
         if (real) {
+            // AWAIT the uninstall event so the HTTPS request completes before the host tears us down
+            // (a fire-and-forget track() would be cut off). Never throws.
+            await emitEvent(EVENT_PREFIX + 'uninstalled', { enabled, properties: baseTelemetryProperties() }).catch((): void => {});
             // Critical clears FIRST (fast, so they finish inside the shutdown budget): exactly what
             // sign-out does — revoke + clear SecretStorage (Cognito session + cached collector tokens),
             // which survives uninstall and would otherwise leave a reinstall "signed in" and refill the
             // token without asking. Then drop the config token. The slow project uninstall runs LAST.
             await authManager?.signOut().catch((): void => undefined);
             clearCollectorTokenFromGlobalConfig(); // drop the extension-managed collector.oauthToken
+            clearOwnedDevtoolsMcpFromGlobalConfig(); // drop an owned devtools mcp a prior version wrote to global
             runCliUninstallAll(extPath, process.execPath);
+        } else {
+            // Reload/shutdown/window-close — best-effort (may be cut short if the host exits fast).
+            await emitEvent(EVENT_PREFIX + 'deactivated', { enabled, properties: baseTelemetryProperties() }).catch((): void => {});
         }
-    } catch {
-        /* non-fatal — never block the host from shutting down */
+    } catch (err) {
+        // Non-fatal — never block the host from shutting down. Best-effort telemetry only (no UI/log:
+        // the output channel may already be disposed); the request may be cut short on a fast exit.
+        emitErrorEvent('deactivate-cleanup', err, false);
     }
 }
 
@@ -234,8 +423,21 @@ interface Services {
 }
 
 function registerCommands(context: vscode.ExtensionContext, svc: Services): void {
+    // Safety net: VS Code does not surface a command handler's rejected promise (it only logs to the
+    // dev console), so wrap every handler — any error that a handler didn't already report itself
+    // lands here as `cursor_ext_error` (via reportError). Handlers that catch + report internally
+    // resolve normally, so there's no double-report.
     const reg: (id: string, cb: (...a: unknown[]) => unknown) => number = (id: string, cb: (...a: unknown[]) => unknown): number =>
-        context.subscriptions.push(vscode.commands.registerCommand(id, cb));
+        context.subscriptions.push(
+            vscode.commands.registerCommand(id, async (...args: unknown[]): Promise<unknown> => {
+                try {
+                    return await cb(...args);
+                } catch (err) {
+                    reportError(`IronBee command '${id}' failed: ${(err as Error).message}`, err);
+                    return undefined;
+                }
+            }),
+        );
 
     reg('ironbee.signIn', (): Promise<void> => signIn(svc));
     reg('ironbee.signOut', (): Promise<void> => signOut(svc));
@@ -273,7 +475,7 @@ async function signIn(svc: Services): Promise<void> {
         if (err instanceof SignInAbortedError) {
             return; // user cancelled — the progress is already gone; no error toast
         }
-        void vscode.window.showErrorMessage(`IronBee sign-in failed: ${(err as Error).message}`);
+        reportError(`IronBee sign-in failed: ${(err as Error).message}`, err);
     }
 }
 
@@ -287,8 +489,9 @@ async function maybePromptPendingInvitations(svc: Services): Promise<void> {
     let pending: Awaited<ReturnType<ConsoleClient['pendingInvitations']>>;
     try {
         pending = await svc.console.pendingInvitations();
-    } catch {
-        return; // endpoint unavailable / not entitled — nothing to surface
+    } catch (err) {
+        logError('pending-invitations', err); // endpoint unavailable / not entitled — no UI, just record
+        return;
     }
     if (!pending || pending.length === 0) {
         return;
@@ -341,8 +544,8 @@ async function signOut(svc: Services): Promise<void> {
         'Also remove local CLI token',
     );
     if (choice === 'Also remove local CLI token') {
-        await clearCollectorToken().catch((e: unknown): Thenable<string | undefined> =>
-            vscode.window.showErrorMessage(`Could not remove local token: ${(e as Error).message}`),
+        await clearCollectorToken().catch((e: unknown): void =>
+            reportError(`Could not remove local token: ${(e as Error).message}`, e),
         );
     }
     await refreshStatus(svc.auth, svc.console);
@@ -400,7 +603,7 @@ async function switchAccount(svc: Services): Promise<void> {
         void vscode.window.showInformationMessage(`Switched to ${pick.name}.`);
     } catch (err) {
         if (!notifyAccessIssue(err, svc.envConfig)) {
-            void vscode.window.showErrorMessage(`Could not switch account: ${(err as Error).message}`);
+            reportError(`Could not switch account: ${(err as Error).message}`, err);
         }
     }
 }
@@ -428,22 +631,25 @@ async function requireSignIn(svc: Services): Promise<boolean> {
 async function installIntoProject(svc: Services): Promise<void> {
     const cliEntry: string | undefined = resolveCliEntry();
     if (!cliEntry) {
-        void vscode.window.showErrorMessage('IronBee CLI is not bundled in this build.');
+        reportError('IronBee CLI is not bundled in this build.');
         return;
     }
     // Sign-in is required to set up IronBee — verification is tied to the user's account.
     if (!(await requireSignIn(svc))) {
+        track('setup_cancelled', { at: 'sign_in' });
         return;
     }
     // 1) Which projects — checkbox list of open folders + a folder browser for custom paths.
     const folders: string[] | undefined = await pickProjects();
     if (!folders || folders.length === 0) {
+        track('setup_cancelled', { at: 'project_selection' });
         return;
     }
     const cfg: vscode.WorkspaceConfiguration = vscode.workspace.getConfiguration('ironbee');
     // 2) Mode — asked ONCE, applied to all selected projects.
     const mode: VerificationMode | undefined = await pickMode(cfg.get<VerificationMode>('install.defaultMode', 'assist'));
     if (!mode) {
+        track('setup_cancelled', { at: 'mode_selection' });
         return;
     }
 
@@ -456,7 +662,14 @@ async function installIntoProject(svc: Services): Promise<void> {
             (): Promise<FolderOutcome> =>
                 setUpFolder(folder, mode, {
                     pickPlatforms: (folderDir: string): Promise<string[] | undefined> => pickPlatformsFor(folderDir),
-                    runner: { nodePath: process.execPath, cliEntry, log: (l: string): void => log(l) },
+                    runner: {
+                        nodePath: process.execPath,
+                        cliEntry,
+                        log: (l: string): void => log(l),
+                        // Bundled build: bake the bundled devtools entry into THIS project's mcp.json
+                        // (per-project), instead of the shared global config.
+                        env: devtoolsMcpJson ? { IRONBEE_DEVTOOLS_MCP: devtoolsMcpJson } : undefined,
+                    },
                 }),
         );
         outcomes.push(outcome);
@@ -519,7 +732,7 @@ async function ensureCollectorTokenForActiveAccount(svc: Services): Promise<void
     // console.url + collector.url for the selected environment, independent of auth/token.
     const envCfg: EnvConfig = svc.envConfig;
     await writeEnvironmentEndpoints({ consoleUrl: envCfg.consoleUrl, collectorUrl: envCfg.collectorUrl }).catch((e: unknown): void =>
-        log(`could not write console/collector URLs: ${(e as Error).message}`),
+        logError('write-env-endpoints', e),
     );
 
     if (!(await svc.auth.isSignedIn())) {
@@ -548,7 +761,7 @@ async function ensureCollectorTokenForActiveAccount(svc: Services): Promise<void
         log('collector token ensured in ~/.ironbee/config.json (collector.oauthToken)');
     } catch (err) {
     // Log the full detail to the output channel (the toast truncates) so failures are diagnosable.
-        log(`collector token FAILED: ${(err as Error).message}`);
+        logError('collector-token-write', err);
         if (!notifyAccessIssue(err, svc.envConfig)) {
             outputChannel.show(true);
             void vscode.window.showWarningMessage(
@@ -562,10 +775,11 @@ function reportSetupOutcomes(outcomes: FolderOutcome[]): void {
     const ok: FolderOutcome[] = outcomes.filter((o: FolderOutcome): boolean => !o.cancelled && o.failed.length === 0 && o.installed.length > 0);
     const failed: FolderOutcome[] = outcomes.filter((o: FolderOutcome): boolean => o.failed.length > 0);
     if (ok.length > 0) {
-        track('install');
+        track('project_setup', { project_count: ok.length });
     }
     if (failed.length > 0) {
-        void vscode.window.showErrorMessage(
+        track('project_setup_failed', { project_count: failed.length });
+        reportError(
             `IronBee setup failed for ${failed.length} project(s): ${failed.map((o: FolderOutcome): string => path.basename(o.folder)).join(', ')}. See the IronBee output.`,
         );
         outputChannel.show(true);
@@ -581,7 +795,7 @@ function reportSetupOutcomes(outcomes: FolderOutcome[]): void {
 async function uninstallFromProject(): Promise<void> {
     const cliEntry: string | undefined = resolveCliEntry();
     if (!cliEntry) {
-        void vscode.window.showErrorMessage('IronBee CLI is not bundled in this build.');
+        reportError('IronBee CLI is not bundled in this build.');
         return;
     }
     // Only offer folders that are actually set up.
@@ -627,13 +841,14 @@ async function uninstallFromProject(): Promise<void> {
         (ok ? removed : failed).push(p.dir);
     }
     if (failed.length > 0) {
-        void vscode.window.showErrorMessage(
+        track('project_uninstall_failed', { project_count: failed.length });
+        reportError(
             `Could not remove IronBee from ${failed.length} project(s): ${failed.map((d: string): string => path.basename(d)).join(', ')}. See the IronBee output.`,
         );
         outputChannel.show(true);
     }
     if (removed.length > 0) {
-        track('uninstall');
+        track('project_uninstall', { project_count: removed.length });
         void vscode.window.showInformationMessage(
             `IronBee removed from ${removed.length} project(s): ${removed.map((d: string): string => path.basename(d)).join(', ')}.`,
         );
@@ -663,6 +878,7 @@ async function installBrowsers(context: vscode.ExtensionContext, extensionPath: 
                 onChromiumFailure: (detail: string): Promise<void> => promptSystemChromeFallback(detail),
             }),
     );
+    track('browser_install', { ok, revision: browserVersions.chromiumRevision });
     if (ok) {
         log(`browsers ready (chromium rev ${browserVersions.chromiumRevision})`);
         await context.globalState.update(BROWSERS_MARK, browserVersions.chromiumRevision);
@@ -691,6 +907,7 @@ async function promptSystemChromeFallback(detail: string): Promise<void> {
         'Not now',
     );
     if (choice === 'Use Google Chrome') {
+        track('browser_system_fallback_accepted');
         await vscode.workspace
             .getConfiguration('ironbee')
             .update('browser.useSystemBrowser', true, vscode.ConfigurationTarget.Global);
@@ -717,6 +934,7 @@ async function ensureDevtoolsPrewarmed(context: vscode.ExtensionContext): Promis
         { location: vscode.ProgressLocation.Window, title: 'IronBee: preparing verification tools…' },
         (): Promise<PrewarmResult> => prewarmDevtools({ spec, log: (l: string): void => log(l) }),
     );
+    track('devtools_prewarm', { ok: res.ok, reason: res.ok ? undefined : res.reason });
     if (res.ok) {
         log(`devtools pre-warmed (${spec})`);
         await context.globalState.update(PREWARM_MARK, spec);
@@ -780,7 +998,8 @@ async function showStatus(svc: Services): Promise<void> {
             `Account: ${current.name ?? current.id}`,
             `Role: ${current.role}`,
         ].join('\n');
-    } catch {
+    } catch (err) {
+        logError('show-status', err);
         detail = 'Signed in (account details unavailable — offline?)';
     }
     const choice: string | undefined = await vscode.window.showInformationMessage('IronBee', { modal: true, detail }, 'Switch Account');
@@ -902,13 +1121,13 @@ async function firstRunAndSuggest(context: vscode.ExtensionContext, auth: AuthMa
             statusBar?.needsProjectSetup();
             const choice: string | undefined = await vscode.window.showInformationMessage(
                 'IronBee can verify this project’s changes — set it up in one click.',
-                'Set up IronBee',
+                'Set up',
                 'Later',
-                "Don't ask for this project",
+                "Don't ask again",
             );
-            if (choice === 'Set up IronBee') {
+            if (choice === 'Set up') {
                 await vscode.commands.executeCommand('ironbee.installIntoProject');
-            } else if (choice === "Don't ask for this project") {
+            } else if (choice === "Don't ask again") {
                 await context.workspaceState.update(key, true);
             }
         }
@@ -928,7 +1147,8 @@ async function isSetUp(folderDir: string): Promise<boolean> {
 
 async function refreshStatus(auth: AuthManager, console: ConsoleClient): Promise<void> {
     if (!(await auth.isSignedIn())) {
-    // State (b): a CLI collector token exists but no Cognito session → distinct label.
+        currentUserEmail = undefined; // signed out → drop the cached email from telemetry
+        // State (b): a CLI collector token exists but no Cognito session → distinct label.
         if (await hasLocalCollectorToken().catch((): boolean => false)) {
             statusBar?.collectorOnly();
         } else {
@@ -938,12 +1158,15 @@ async function refreshStatus(auth: AuthManager, console: ConsoleClient): Promise
     }
     try {
         const [me, current]: [{ id: string; email: string }, Account] = await Promise.all([console.usersMe(), console.currentAccount()]);
+        currentUserEmail = me.email; // cache for telemetry — no per-event API call
         statusBar?.signedIn(me.email, current.name ?? current.id);
     } catch (err) {
         if (err instanceof NotSignedInError) {
+            currentUserEmail = undefined;
             statusBar?.signedOut();
         } else {
             // Signed in but API unreachable (e.g. offline / BE-1 pending): keep a neutral label.
+            logError('refresh-status', err);
             statusBar?.signedIn(undefined, null);
         }
     }
@@ -958,5 +1181,11 @@ function resolveCliEntry(): string | undefined {
 }
 
 function log(line: string): void {
-    output().appendLine(line);
+    // Guarded: the output channel may not exist yet (very early) or be disposed (during shutdown);
+    // a logging call must never throw into its caller (e.g. a manager's telemetry error sink).
+    try {
+        outputChannel.appendLine(line);
+    } catch {
+        /* channel not yet created or already disposed — drop the line */
+    }
 }

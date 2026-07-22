@@ -28,6 +28,7 @@ function setup(overrides: Partial<FakeConsole> = {}, now: () => number = () => 1
         ...overrides,
     };
     const store = new TokenStore(memSecrets(), 'prod');
+    const telemetry = { event: vi.fn(), error: vi.fn() };
     const deps: AccountManagerDeps = {
         console: console as never,
         store,
@@ -36,8 +37,9 @@ function setup(overrides: Partial<FakeConsole> = {}, now: () => number = () => 1
         writeCollector: async (url, token) => void writes.push([url, token]),
         refreshSession,
         now,
+        telemetry,
     };
-    return { mgr: new AccountManager(deps), console, store, writes, refreshSession };
+    return { mgr: new AccountManager(deps), console, store, writes, refreshSession, telemetry };
 }
 
 const NOW = 1_700_000_000_000;
@@ -74,7 +76,7 @@ describe('ensureCollectorToken', () => {
     });
 
     it('rotates a near-expiry cached token: deletes the old one and mints a fresh one', async () => {
-        const { mgr, console, store, writes } = setup({
+        const { mgr, console, store, writes, telemetry } = setup({
             listAccessTokens: vi.fn(async () => [{ id: 'tokA', name: `${TOKEN_LABEL_PREFIX}host9`, expiresAt: iso(NOW + 2 * DAY) }]),
         });
         await store.setCollectorToken('acc1', { token: 'ibt_old', id: 'tokA' });
@@ -83,6 +85,7 @@ describe('ensureCollectorToken', () => {
         expect(console.mintAccessToken).toHaveBeenCalled();
         expect(writes).toEqual([['https://collector.x', 'ibt_new']]); // fresh token written
         expect((await store.getCollectorToken('acc1'))?.id).toBe('tok_new'); // cache updated
+        expect(telemetry.event).toHaveBeenCalledWith('collector_token_rotated', { reason: 'near_expiry' });
     });
 
     it('reuses the cached token on a transient list failure (no needless mint)', async () => {
@@ -121,7 +124,7 @@ describe('ensureCollectorToken', () => {
             .fn()
             .mockRejectedValueOnce(new ConsoleError(409, '/access-tokens', 'TOKEN_LIMIT_EXCEEDED'))
             .mockResolvedValueOnce({ token: 'ibt_after', id: 'tok_after' });
-        const { mgr, console } = setup({
+        const { mgr, console, telemetry } = setup({
             mintAccessToken: mint,
             listAccessTokens: vi.fn(async () => [
                 { id: 'foreign', name: 'someone-else' },
@@ -131,16 +134,18 @@ describe('ensureCollectorToken', () => {
         await mgr.ensureCollectorToken('acc1');
         expect(console.deleteAccessToken).toHaveBeenCalledWith('mine');
         expect(mint).toHaveBeenCalledTimes(2);
+        expect(telemetry.event).toHaveBeenCalledWith('token_cap_recovered');
     });
 
     it('at the cap with only foreign tokens, throws an actionable error (never deletes foreign)', async () => {
         const mint = vi.fn().mockRejectedValue(new ConsoleError(409, '/access-tokens', 'TOKEN_LIMIT_EXCEEDED'));
-        const { mgr, console } = setup({
+        const { mgr, console, telemetry } = setup({
             mintAccessToken: mint,
             listAccessTokens: vi.fn(async () => [{ id: 'foreign', name: 'someone-else' }]),
         });
         await expect(mgr.ensureCollectorToken('acc1')).rejects.toThrow(/10-token limit/);
         expect(console.deleteAccessToken).not.toHaveBeenCalled();
+        expect(telemetry.event).toHaveBeenCalledWith('token_cap_blocked');
     });
 });
 
@@ -183,10 +188,11 @@ describe('switchTo', () => {
             .mockResolvedValueOnce(undefined) // switch to acc2 ok
             .mockRejectedValueOnce(new Error('rollback switch failed')); // rollback fails
         const refreshSession = vi.fn().mockRejectedValue(new Error('refresh dead'));
-        const { mgr } = setup({ switchAccount });
+        const { mgr, telemetry } = setup({ switchAccount });
         (mgr as unknown as { deps: AccountManagerDeps }).deps.refreshSession = refreshSession;
         await expect(mgr.switchTo('acc2')).rejects.toThrow();
         expect(mgr.isDirty()).toBe(true);
+        expect(telemetry.error).toHaveBeenCalledWith('account-switch-rollback', expect.anything());
     });
 
     it('surfaces a currentAccount() failure with no server switch or write', async () => {

@@ -7,6 +7,8 @@ import {
     writeCollectorToken,
     writeDevtoolsEnv,
     writeDevtoolsMcp,
+    clearDevtoolsMcp,
+    isExtensionOwnedDevtoolsMcp,
     writeEnvironmentEndpoints,
     writePrivacyMode,
     hasCollectorToken,
@@ -152,6 +154,50 @@ describe('writeDevtoolsMcp', () => {
             env: { ELECTRON_RUN_AS_NODE: '1' },
         });
         expect(cfg.collector?.oauthToken).toBe('ibt_x');
+    });
+});
+
+describe('clearDevtoolsMcp (bundled → npx transition)', () => {
+    it('removes a stale bundled mcp override but keeps env + collector', async () => {
+        await writeCollectorToken('https://c', 'ibt_x', cfgPath);
+        await writeDevtoolsMcp(
+            { command: '/old/node', args: ['/deleted/ext-dir/devtools/dist/index.js'], env: { ELECTRON_RUN_AS_NODE: '1' } },
+            cfgPath,
+        );
+        await writeDevtoolsEnv({ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }, cfgPath);
+        await clearDevtoolsMcp(cfgPath);
+        const cfg = await readGlobalConfig(cfgPath);
+        expect(cfg.ironbeeDevTools?.mcp).toBeUndefined(); // stale bundled path dropped
+        expect(cfg.ironbeeDevTools?.env).toEqual({ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }); // env kept
+        expect(cfg.collector?.oauthToken).toBe('ibt_x'); // unrelated block kept
+    });
+
+    it('is a no-op (no throw, no file needed) when there is no mcp override', async () => {
+        await clearDevtoolsMcp(cfgPath); // missing file
+        await writeDevtoolsEnv({ A: 'b' }, cfgPath);
+        await clearDevtoolsMcp(cfgPath); // present config, no mcp
+        expect((await readGlobalConfig(cfgPath)).ironbeeDevTools?.env).toEqual({ A: 'b' });
+    });
+
+    it('isExtensionOwnedDevtoolsMcp: true only for a path inside our editor-extensions dir', () => {
+        const owned = { command: '/ed/node', args: ['/Users/x/.cursor/extensions/ironbee-ai.ironbee-vscode-0.1.4-darwin-arm64/node_modules/@ironbee-ai/devtools/dist/index.js'] };
+        const ownedVscode = { command: '/ed/node', args: ['C:\\Users\\x\\.vscode\\extensions\\ironbee-ai.ironbee-vscode-0.1.4-win32-x64\\node_modules\\@ironbee-ai\\devtools\\dist\\index.js'] };
+        const userCustom = { command: 'node', args: ['/opt/my/devtools/index.js'] }; // hand-set / CLI override
+        expect(isExtensionOwnedDevtoolsMcp(owned)).toBe(true);
+        expect(isExtensionOwnedDevtoolsMcp(ownedVscode)).toBe(true);
+        expect(isExtensionOwnedDevtoolsMcp(userCustom)).toBe(false);
+        expect(isExtensionOwnedDevtoolsMcp(undefined)).toBe(false);
+    });
+
+    it('clearDevtoolsMcp with the owned predicate removes OUR block but leaves a user override', async () => {
+        // Ours → removed.
+        await writeDevtoolsMcp({ command: '/ed/node', args: ['/home/u/.cursor/extensions/ironbee-ai.ironbee-vscode-0.1.4-linux-x64/node_modules/@ironbee-ai/devtools/dist/index.js'] }, cfgPath);
+        await clearDevtoolsMcp(cfgPath, isExtensionOwnedDevtoolsMcp);
+        expect((await readGlobalConfig(cfgPath)).ironbeeDevTools?.mcp).toBeUndefined();
+        // User's own → preserved.
+        await writeDevtoolsMcp({ command: 'node', args: ['/opt/custom/devtools.js'] }, cfgPath);
+        await clearDevtoolsMcp(cfgPath, isExtensionOwnedDevtoolsMcp);
+        expect((await readGlobalConfig(cfgPath)).ironbeeDevTools?.mcp).toEqual({ command: 'node', args: ['/opt/custom/devtools.js'] });
     });
 });
 

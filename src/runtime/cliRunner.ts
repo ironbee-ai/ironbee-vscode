@@ -22,6 +22,12 @@ export interface RunnerContext {
   log?: (line: string) => void;
   /** Injectable spawn for tests. */
   spawn?: typeof nodeSpawn;
+  /**
+   * Extra env for the spawned CLI. Used to pass `IRONBEE_DEVTOOLS_MCP` so `ironbee install` bakes the
+   * bundled devtools entry into THIS project's `.cursor/mcp.json` — a per-project override that never
+   * touches the shared global `~/.ironbee/config.json`.
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -100,7 +106,7 @@ function spawnCli(ctx: RunnerContext, args: string[], cwd: string, startErrLabel
     const options: SpawnOptions = {
         cwd,
         shell: false,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...ctx.env },
     };
     const stdoutSink: LineSink = lineSink(ctx.log);
     const stderrSink: LineSink = lineSink(ctx.log);
