@@ -7,7 +7,7 @@ Broken changes get caught, fixed, and re-verified before they land.
 
 <img src="https://raw.githubusercontent.com/ironbee-ai/ironbee-vscode/main/media/readme/hero.gif" alt="IronBee in Cursor: sign in, set up the project, and the verification gate takes over" width="880"/>
 
-**[▶ Watch the full demo (2 min)](https://youtu.be/DBIPC6Xs1zY)**
+**[▶ Watch the full demo (2 min)](https://youtu.be/v_DplsOyxsw)**
 
 [![Open VSX](https://img.shields.io/open-vsx/v/ironbee-ai/ironbee-vscode?label=Open%20VSX&color=4c7ba8)](https://open-vsx.org/extension/ironbee-ai/ironbee-vscode)
 [![Downloads](https://img.shields.io/open-vsx/dt/ironbee-ai/ironbee-vscode?label=downloads&color=5b8a4a)](https://open-vsx.org/extension/ironbee-ai/ironbee-vscode)
