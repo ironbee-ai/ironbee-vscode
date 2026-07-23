@@ -7,7 +7,7 @@ Broken changes get caught, fixed, and re-verified before they land.
 
 <img src="https://raw.githubusercontent.com/ironbee-ai/ironbee-vscode/main/media/readme/hero.gif" alt="IronBee in Cursor: sign in, set up the project, and the verification gate takes over" width="880"/>
 
-**[▶ Watch the full demo (2 min)](https://youtu.be/p14QyXRB-No)**
+**[▶ Watch the full demo (2 min)](https://youtu.be/DBIPC6Xs1zY)**
 
 [![Open VSX](https://img.shields.io/open-vsx/v/ironbee-ai/ironbee-vscode?label=Open%20VSX&color=4c7ba8)](https://open-vsx.org/extension/ironbee-ai/ironbee-vscode)
 [![Downloads](https://img.shields.io/open-vsx/dt/ironbee-ai/ironbee-vscode?label=downloads&color=5b8a4a)](https://open-vsx.org/extension/ironbee-ai/ironbee-vscode)
@@ -78,6 +78,10 @@ You decide how strict the gate is for each project:
 | **assist** | Issues are surfaced with suggested fixes; your agent is never blocked. | ← start here |
 | **enforce** | The agent isn't done until verification passes. Broken changes never land. | strongest |
 | **monitor** | Everything is recorded and reported; nothing interferes. | |
+
+> **assist** is the default mode. In assist, verification doesn't run on its own: type
+> **`/ironbee-verify`** in your agent's chat to verify the current changes whenever you want
+> (or `/ironbee-verify fix` to let the agent fix and re-verify until it passes).
 
 Change your mind anytime with **IronBee: Reconfigure This Project**.
 
