@@ -20,6 +20,8 @@ package-lock.json
 # Internal contributor/agent docs — not for end users.
 AGENTS.md
 CLAUDE.md
+# README media is referenced via absolute GitHub raw URLs — keep it out of the VSIX.
+media/readme/**
 
 # Trim transitive dep cruft (examples/tests/docs) to keep the VSIX small.
 node_modules/**/example/**

@@ -1,7 +1,7 @@
 {
   "name": "ironbee-vscode",
   "displayName": "IronBee",
-  "description": "IronBee — Verification and Intelligence Layer for AI Coding Agents",
+  "description": "Your AI agent writes the code. IronBee proves it works — the verification & intelligence layer for AI coding agents.",
   "version": "0.2.0",
   "publisher": "ironbee-ai",
   "icon": "media/icon.png",
