@@ -33,7 +33,7 @@ describe.runIf(LIVE)('LIVE: ironbee install', () => {
             // The extension writes this to global config so npx-devtools never downloads browsers.
             await writeDevtoolsEnv({ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1', BROWSER_DEVTOOLS_INSTALL_CHROMIUM: 'false' });
 
-            expect(await resolveInstallClients(proj)).toEqual(['cursor']);
+            expect(resolveInstallClients()).toEqual(['cursor']);
 
             const res = await runInstall(
                 { nodePath: process.execPath, cliEntry },

@@ -508,15 +508,15 @@ could disrupt projects the user never intended to touch, and verification settin
   `verification.checks` are chosen **per project** via QuickPick (or the folder's existing
   `<folder>/.ironbee/config.json` if re-running), written to that folder's committed
   `.ironbee/config.json`.
-- **AI-client selection — `.cursor` is ALWAYS installed; detected clients are kept alongside.**
-  Detect existing client dirs per folder (`.cursor`/`.claude`/`.codex`) and target the union of
-  the detected set and **`cursor`** — this being a Cursor extension, the editor the user is
-  actually sitting in must always get wired up, even when the project already has `.claude`/
-  `.codex` from other tools (those installs are kept, never removed). `cursor` is passed as
-  `--client cursor` **explicitly**. ⚠ Do NOT rely on the CLI's own no-detection fallback:
-  `REGISTERED_CLIENTS[0]` is **`claude`** (`ironbee-cli/src/clients/registry.ts:10-14,88`), so an
-  unqualified install would land in `.claude`, not `.cursor`. `cursor` is a valid `--client`
-  value (`clients/cursor/index.ts:162`).
+- **AI-client selection — install into `.cursor` ONLY, always.** This being a Cursor extension,
+  every install targets exactly **`cursor`**: `.cursor` is created if missing and updated
+  in-place if present (the CLI merges — only IronBee-owned entries in `mcp.json`/`hooks.json`/
+  `permissions.json` and `ironbee-*` files are written; the user's own entries are preserved).
+  Existing `.claude`/`.codex` dirs are **never touched** — no IronBee files are written into
+  them, nothing is removed from them. `cursor` is passed as `--client cursor` **explicitly**.
+  ⚠ Do NOT rely on the CLI's own no-detection fallback: `REGISTERED_CLIENTS[0]` is **`claude`**
+  (`ironbee-cli/src/clients/registry.ts:10-14,88`), so an unqualified install would land in
+  `.claude`, not `.cursor`. `cursor` is a valid `--client` value (`clients/cursor/index.ts:162`).
 - **LLM-driven platform suggestion (best-effort, reuses IronBee's own mechanism — NOT the
   editor's LLM API).** The platform QuickPick offers a "Suggest platforms" affordance that
   pre-selects platforms based on the project. The suggestion is produced by running the user's

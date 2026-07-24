@@ -37,7 +37,6 @@ import { suggestPlatforms, KNOWN_PLATFORMS, type Platform, type SuggestResult } 
 import { detectAgentCli, type AgentCli } from './runtime/agentCli';
 import { MODE_DESCRIPTIONS, PLATFORM_DESCRIPTIONS } from './ui/descriptions';
 import { runUninstall, type RunnerContext, type VerificationMode } from './runtime/cliRunner';
-import { refreshSetUpFolders, shouldRefreshSetups, type FolderRefreshOutcome } from './lifecycle/upgradeRefresh';
 import { StatusBar } from './ui/statusBar';
 import { ensureAnonymousId, emitEvent } from './lifecycle/telemetry';
 import { redact } from './util/redact';
@@ -139,13 +138,6 @@ async function activateInner(context: vscode.ExtensionContext): Promise<void> {
     void firstRunAndSuggest(context, auth).catch((e: unknown): void => logError('first-run/suggest', e));
     // Proactively rotate/refill the collector token before its ~90-day expiry (quietly, if signed in).
     void rotateCollectorTokenOnStartup(svc).catch((e: unknown): void => logError('startup-token-check', e));
-    // Silent upgrade refresh: on the first activation after an extension install/upgrade, re-run
-    // `ironbee install` for already-set-up workspace folders so the IronBee-owned client files are
-    // re-baked (the bundled-devtools path in .cursor/mcp.json is version-scoped and goes stale on
-    // upgrade; this also retroactively adds `.cursor` to projects set up before the always-cursor
-    // fix). Never installs into a folder that was not set up. Runs AFTER wireDevtools (needs
-    // devtoolsMcpJson).
-    void refreshProjectSetupsOnUpgrade(context).catch((e: unknown): void => logError('upgrade-refresh', e));
     // Extension-lifecycle telemetry (install/upgrade + activated). Fire-and-forget.
     void trackActivationLifecycle(context).catch((): void => {});
 }
@@ -186,8 +178,7 @@ function resolveBundledDevtoolsEntry(): string | undefined {
  * The bundled entry is NOT written to the shared global config; it is passed per-project via
  * `IRONBEE_DEVTOOLS_MCP` at `ironbee install` time, which bakes it into each project's own
  * `.cursor/mcp.json`. NOTE: that baked path is still version-scoped to the extension dir, so on an
- * extension upgrade it goes stale — refreshProjectSetupsOnUpgrade re-bakes it silently on the
- * first activation after an upgrade.
+ * extension upgrade already-set-up projects should be re-configured (re-run setup) to refresh it.
  */
 async function wireDevtools(): Promise<'bundled' | 'npx'> {
     const wiring: ReturnType<typeof decideDevtoolsWiring> = decideDevtoolsWiring(resolveBundledDevtoolsEntry(), process.execPath);
@@ -1187,50 +1178,6 @@ function resolveCliEntry(): string | undefined {
     } catch {
         return undefined;
     }
-}
-
-const SETUP_REFRESH_VERSION_KEY: string = 'ironbee.setupRefresh.lastVersion';
-
-/**
- * Once per (workspace, extension version): silently re-run install for every already-set-up
- * workspace folder (no `--mode`/`--platforms` → verification config untouched; `--yes` → no
- * prompt can fire). Per-workspace state, not global — each workspace's projects get refreshed
- * the first time that workspace is opened under the new version. No toasts; failures go to the
- * output channel only, and the marker is still written so a broken folder can't nag forever.
- */
-async function refreshProjectSetupsOnUpgrade(context: vscode.ExtensionContext): Promise<void> {
-    const current: string = extensionVersion();
-    const stored: string | undefined = context.workspaceState.get<string>(SETUP_REFRESH_VERSION_KEY);
-    if (!shouldRefreshSetups(stored, current)) {
-        return;
-    }
-    const folders: string[] = (vscode.workspace.workspaceFolders ?? [])
-        .filter((f: vscode.WorkspaceFolder): boolean => f.uri.scheme === 'file')
-        .map((f: vscode.WorkspaceFolder): string => f.uri.fsPath);
-    if (folders.length === 0) {
-        return; // empty window — keep the marker unset so a real workspace still refreshes later
-    }
-    const cliEntry: string | undefined = resolveCliEntry();
-    if (!cliEntry) {
-        return; // bundled CLI missing — keep the marker unset so a repaired install retries
-    }
-    const runner: RunnerContext = {
-        nodePath: process.execPath,
-        cliEntry,
-        log: (l: string): void => log(l),
-        env: devtoolsMcpJson ? { IRONBEE_DEVTOOLS_MCP: devtoolsMcpJson } : undefined,
-    };
-    const outcomes: FolderRefreshOutcome[] = await refreshSetUpFolders(folders, runner);
-    const touched: FolderRefreshOutcome[] = outcomes.filter((o: FolderRefreshOutcome): boolean => !o.skipped);
-    if (touched.length > 0) {
-        const failedCount: number = touched.filter((o: FolderRefreshOutcome): boolean => o.failed.length > 0).length;
-        log(
-            `upgrade refresh (${current}): re-ran install for ${touched.length} set-up project(s)` +
-                (failedCount > 0 ? ` — ${failedCount} with failures (see above)` : ''),
-        );
-        track('project_setup_refreshed', { project_count: touched.length, failed_count: failedCount });
-    }
-    await context.workspaceState.update(SETUP_REFRESH_VERSION_KEY, current);
 }
 
 function log(line: string): void {

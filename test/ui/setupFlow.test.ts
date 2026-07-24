@@ -44,10 +44,10 @@ describe('setUpFolder', () => {
         expect(out.cancelled).toBe(false);
     });
 
-    it('installs into cursor in addition to a detected client', async () => {
+    it('installs ONLY into cursor even when .claude exists (other clients are never touched)', async () => {
         await fs.mkdir(path.join(dir, '.claude'));
         const out = await setUpFolder(dir, 'assist', deps(async () => ['node']));
-        expect(out.installed).toEqual(['claude', 'cursor']);
+        expect(out.installed).toEqual(['cursor']);
     });
 
     it('cancels (no install) when the platform pick is cancelled', async () => {

@@ -20,7 +20,7 @@ export interface FolderOutcome {
 /**
  * Set up ONE folder with a pre-chosen `mode` (design EXT-6). Platforms are chosen per folder
  * (each project's structure differs) via `deps.pickPlatforms`; then install once per resolved
- * client (`.cursor` always included; detected `.claude`/`.codex` kept alongside it).
+ * client (always exactly `.cursor`; existing `.claude`/`.codex` setups are never touched).
  */
 export async function setUpFolder(
     folderDir: string,
@@ -32,7 +32,7 @@ export async function setUpFolder(
         return { folder: folderDir, cancelled: true, installed: [], failed: [] };
     }
 
-    const clients: AiClient[] = await resolveInstallClients(folderDir);
+    const clients: AiClient[] = resolveInstallClients();
     const installed: AiClient[] = [];
     const failed: AiClient[] = [];
     for (const client of clients) {
