@@ -25,14 +25,15 @@ export async function detectClients(folderDir: string): Promise<AiClient[]> {
 /**
  * Which client(s) `ironbee install` should target for a folder.
  *
- * If any client dir exists, target those. If **none** exists, default to
- * **`cursor`** (this is a Cursor extension) — passed EXPLICITLY as `--client cursor`.
- * We must NOT rely on the CLI's own no-detection fallback: `REGISTERED_CLIENTS[0]`
- * is `claude`, so an unqualified install would land in `.claude` (design EXT-6).
+ * Always includes **`cursor`** (this is a Cursor extension — the editor the user is sitting in
+ * must get wired up even when the project already has `.claude`/`.codex`), plus every other
+ * detected client dir. `cursor` is passed EXPLICITLY as `--client cursor`: we must NOT rely on
+ * the CLI's own no-detection fallback, whose `REGISTERED_CLIENTS[0]` is `claude`, so an
+ * unqualified install would land in `.claude` (design EXT-6).
  */
 export async function resolveInstallClients(folderDir: string): Promise<AiClient[]> {
     const detected: AiClient[] = await detectClients(folderDir);
-    return detected.length > 0 ? detected : ['cursor'];
+    return detected.includes('cursor') ? detected : [...detected, 'cursor'];
 }
 
 async function dirExists(p: string): Promise<boolean> {

@@ -74,6 +74,32 @@ export async function runInstall(ctx: RunnerContext, req: InstallRequest): Promi
     return { ok: code === 0 && configWritten, code, configWritten };
 }
 
+export interface RefreshRequest {
+  folderDir: string;
+  client: AiClient;
+}
+
+/**
+ * Build the argv for a silent re-install (upgrade refresh): NO `--mode`/`--platforms`, so the CLI
+ * keeps the folder's existing verification config untouched and only rewrites the IronBee-owned
+ * client files (hooks/mcp/rules — re-baking e.g. the version-scoped devtools path). `--yes`
+ * guarantees no picker can fire even with an inherited TTY.
+ */
+export function buildRefreshArgs(cliEntry: string, req: RefreshRequest): string[] {
+    return [cliEntry, 'install', req.folderDir, '--client', req.client, '--yes'];
+}
+
+/**
+ * Re-run `ironbee install` for an ALREADY set-up (folder, client) without changing its
+ * verification config. Success = exit 0 AND <folder>/.ironbee/config.json still exists.
+ */
+export async function runRefresh(ctx: RunnerContext, req: RefreshRequest): Promise<InstallResult> {
+    const args: string[] = buildRefreshArgs(ctx.cliEntry, req);
+    const code: number | null = await spawnCli(ctx, args, req.folderDir, 'ironbee install (refresh) failed to start');
+    const configWritten: boolean = await fileExists(path.join(req.folderDir, '.ironbee', 'config.json'));
+    return { ok: code === 0 && configWritten, code, configWritten };
+}
+
 /** Build the non-interactive `ironbee uninstall` argv: auto-detects installed clients; `--yes` skips the confirm. */
 export function buildUninstallArgs(cliEntry: string, folderDir: string): string[] {
     return [cliEntry, 'uninstall', folderDir, '--yes'];

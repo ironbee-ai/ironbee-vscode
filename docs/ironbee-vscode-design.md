@@ -508,14 +508,15 @@ could disrupt projects the user never intended to touch, and verification settin
   `verification.checks` are chosen **per project** via QuickPick (or the folder's existing
   `<folder>/.ironbee/config.json` if re-running), written to that folder's committed
   `.ironbee/config.json`.
-- **AI-client selection — default to `.cursor` when nothing is detected.** Detect existing client
-  dirs per folder (`.cursor`/`.claude`/`.codex`) and target the detected one(s). **If none of the
-  three exist, this being a Cursor extension, install into `.cursor`** by passing `--client cursor`
-  **explicitly**. ⚠ Do NOT rely on the CLI's own no-detection fallback: `REGISTERED_CLIENTS[0]` is
-  **`claude`** (`ironbee-cli/src/clients/registry.ts:10-14,88`), so an unqualified install would
-  land in `.claude`, not `.cursor`. `cursor` is a valid `--client` value
-  (`clients/cursor/index.ts:162`). (If the host is VS Code proper rather than Cursor, still default
-  to the detected client, or `cursor` if the extension standardizes on it.)
+- **AI-client selection — `.cursor` is ALWAYS installed; detected clients are kept alongside.**
+  Detect existing client dirs per folder (`.cursor`/`.claude`/`.codex`) and target the union of
+  the detected set and **`cursor`** — this being a Cursor extension, the editor the user is
+  actually sitting in must always get wired up, even when the project already has `.claude`/
+  `.codex` from other tools (those installs are kept, never removed). `cursor` is passed as
+  `--client cursor` **explicitly**. ⚠ Do NOT rely on the CLI's own no-detection fallback:
+  `REGISTERED_CLIENTS[0]` is **`claude`** (`ironbee-cli/src/clients/registry.ts:10-14,88`), so an
+  unqualified install would land in `.claude`, not `.cursor`. `cursor` is a valid `--client`
+  value (`clients/cursor/index.ts:162`).
 - **LLM-driven platform suggestion (best-effort, reuses IronBee's own mechanism — NOT the
   editor's LLM API).** The platform QuickPick offers a "Suggest platforms" affordance that
   pre-selects platforms based on the project. The suggestion is produced by running the user's

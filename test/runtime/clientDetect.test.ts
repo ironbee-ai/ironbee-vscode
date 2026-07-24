@@ -38,8 +38,16 @@ describe('resolveInstallClients', () => {
         expect(await resolveInstallClients(dir)).toEqual(['cursor']);
     });
 
-    it('targets detected clients when present', async () => {
+    it('always includes cursor alongside detected clients', async () => {
         await fs.mkdir(path.join(dir, '.claude'));
-        expect(await resolveInstallClients(dir)).toEqual(['claude']);
+        expect(await resolveInstallClients(dir)).toEqual(['claude', 'cursor']);
+    });
+
+    it('does not duplicate cursor when .cursor already exists', async () => {
+        await fs.mkdir(path.join(dir, '.cursor'));
+        await fs.mkdir(path.join(dir, '.codex'));
+        const clients = await resolveInstallClients(dir);
+        expect(clients.filter((c) => c === 'cursor')).toHaveLength(1);
+        expect(clients).toContain('codex');
     });
 });

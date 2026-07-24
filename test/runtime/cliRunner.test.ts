@@ -5,8 +5,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
     buildInstallArgs,
+    buildRefreshArgs,
     buildUninstallArgs,
     runInstall,
+    runRefresh,
     runUninstall,
     type RunnerContext,
     type InstallRequest,
@@ -32,6 +34,15 @@ describe('buildInstallArgs', () => {
         expect(args).not.toContain('--platforms');
         expect(args).toContain('--client');
         expect(args[args.indexOf('--client') + 1]).toBe('claude');
+    });
+});
+
+describe('buildRefreshArgs', () => {
+    it('builds a silent re-install argv: explicit client, --yes, and NO --mode/--platforms', () => {
+        const args = buildRefreshArgs('/cli.js', { folderDir: '/proj', client: 'cursor' });
+        expect(args).toEqual(['/cli.js', 'install', '/proj', '--client', 'cursor', '--yes']);
+        expect(args).not.toContain('--mode');
+        expect(args).not.toContain('--platforms');
     });
 });
 
@@ -163,6 +174,43 @@ describe('runInstall', () => {
         await runInstall({ nodePath: 'node', cliEntry: '/cli.js', log: (l) => lines.push(l), spawn: twoChunkSpawn }, req());
         expect(lines.join('\n')).not.toContain('ibt_secretvalue999999');
         expect(lines.join('\n')).toContain('ibt_***');
+    });
+});
+
+describe('runRefresh', () => {
+    let dir: string;
+    beforeEach(async () => {
+        dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ib-refresh-'));
+    });
+    afterEach(async () => {
+        await fs.rm(dir, { recursive: true, force: true });
+    });
+
+    it('ok when exit 0 and the folder config still exists', async () => {
+        await fs.mkdir(path.join(dir, '.ironbee'));
+        await fs.writeFile(path.join(dir, '.ironbee', 'config.json'), '{}');
+        const res = await runRefresh({ nodePath: 'node', cliEntry: '/cli.js', spawn: fakeSpawn(0) }, { folderDir: dir, client: 'cursor' });
+        expect(res.ok).toBe(true);
+    });
+
+    it('not ok when the CLI exits non-zero', async () => {
+        await fs.mkdir(path.join(dir, '.ironbee'));
+        await fs.writeFile(path.join(dir, '.ironbee', 'config.json'), '{}');
+        const res = await runRefresh({ nodePath: 'node', cliEntry: '/cli.js', spawn: fakeSpawn(1) }, { folderDir: dir, client: 'cursor' });
+        expect(res.ok).toBe(false);
+        expect(res.code).toBe(1);
+    });
+
+    it('resolves not-ok (does not throw) when the child errors', async () => {
+        const errorSpawn = (() => {
+            const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
+            child.stdout = new EventEmitter();
+            child.stderr = new EventEmitter();
+            setImmediate(() => child.emit('error', Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })));
+            return child;
+        }) as unknown as RunnerContext['spawn'];
+        const res = await runRefresh({ nodePath: '/no/node', cliEntry: '/cli.js', spawn: errorSpawn }, { folderDir: dir, client: 'cursor' });
+        expect(res).toEqual({ ok: false, code: null, configWritten: false });
     });
 });
 

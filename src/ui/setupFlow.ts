@@ -20,7 +20,7 @@ export interface FolderOutcome {
 /**
  * Set up ONE folder with a pre-chosen `mode` (design EXT-6). Platforms are chosen per folder
  * (each project's structure differs) via `deps.pickPlatforms`; then install once per resolved
- * client (defaults to `.cursor` when none is detected).
+ * client (`.cursor` always included; detected `.claude`/`.codex` kept alongside it).
  */
 export async function setUpFolder(
     folderDir: string,
