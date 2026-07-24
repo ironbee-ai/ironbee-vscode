@@ -2,7 +2,7 @@
   "name": "ironbee-vscode",
   "displayName": "IronBee",
   "description": "Your AI agent writes the code. IronBee proves it works — the verification & intelligence layer for AI coding agents.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "ironbee-ai",
   "icon": "media/icon.png",
   "license": "Elastic-2.0",
